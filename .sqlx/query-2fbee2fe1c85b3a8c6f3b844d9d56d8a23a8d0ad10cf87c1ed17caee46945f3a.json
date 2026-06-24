@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT scope_config, encrypted_credentials\n           FROM job_integrations\n           WHERE job_id = $1 AND tool_type = 'sprite_env' AND is_active = true\n           ORDER BY created_at DESC LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "scope_config",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 1,
+        "name": "encrypted_credentials",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      true
+    ]
+  },
+  "hash": "2fbee2fe1c85b3a8c6f3b844d9d56d8a23a8d0ad10cf87c1ed17caee46945f3a"
+}

@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE node_executions\n               SET status = $1, output_key = $2, output_json = $3, logs = $4, finished_at = NOW()\n               WHERE id = $5",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Jsonb",
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e40967e99ab6fc61213927e94003675bf7b8a1b4ec73724184a947b86629f52c"
+}

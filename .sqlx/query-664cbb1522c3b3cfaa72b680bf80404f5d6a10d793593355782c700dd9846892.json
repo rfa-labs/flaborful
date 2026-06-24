@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT output_key, output_json FROM node_executions\n               WHERE task_id = $1 AND node_id = $2 AND status = 'completed'\n               ORDER BY attempt DESC LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "output_key",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "output_json",
+        "type_info": "Jsonb"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      true,
+      true
+    ]
+  },
+  "hash": "664cbb1522c3b3cfaa72b680bf80404f5d6a10d793593355782c700dd9846892"
+}

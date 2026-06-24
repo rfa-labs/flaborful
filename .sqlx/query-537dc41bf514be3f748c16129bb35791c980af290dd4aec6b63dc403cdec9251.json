@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE job_applications SET status = 'rejected', updated_at = NOW()\n           WHERE job_id = $1 AND id <> $2 AND status NOT IN ('withdrawn')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "537dc41bf514be3f748c16129bb35791c980af290dd4aec6b63dc403cdec9251"
+}

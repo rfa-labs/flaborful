@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE node_executions SET dirty = false WHERE task_id = $1 AND node_id = ANY($2)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "TextArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0dd5d2f7a912d7ef218157eac7b83b767230b4788a6d5aa1792a4525e17c4bf4"
+}

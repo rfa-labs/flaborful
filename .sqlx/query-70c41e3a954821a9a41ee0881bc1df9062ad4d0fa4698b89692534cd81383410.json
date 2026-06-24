@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE node_executions SET effect_decision = $1\n           WHERE id = (SELECT id FROM node_executions\n                       WHERE task_id = $2 AND node_id = $3 AND status = 'awaiting_effect'\n                       ORDER BY attempt DESC LIMIT 1)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "70c41e3a954821a9a41ee0881bc1df9062ad4d0fa4698b89692534cd81383410"
+}

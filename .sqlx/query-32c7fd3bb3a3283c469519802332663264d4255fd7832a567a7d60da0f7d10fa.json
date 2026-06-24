@@ -1,0 +1,34 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT a.id as agent_id, a.persona_system_prompt, a.cf_finetune_id\n           FROM tasks t JOIN jobs j ON j.id = t.job_id JOIN agents a ON a.id = j.agent_id\n           WHERE t.id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "agent_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "persona_system_prompt",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "cf_finetune_id",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "32c7fd3bb3a3283c469519802332663264d4255fd7832a567a7d60da0f7d10fa"
+}

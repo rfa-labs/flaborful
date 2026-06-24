@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE tasks SET status = 'delivered', output_approved = $1,\n               delivered_at = NOW() WHERE id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8a2a80368d2db8dc3bb9a8f646c8ea1a909f9a025433fe516c26d968c265bbec"
+}

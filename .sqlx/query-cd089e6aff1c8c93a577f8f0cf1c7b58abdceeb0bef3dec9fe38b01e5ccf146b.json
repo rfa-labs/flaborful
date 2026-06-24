@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE tasks SET confidence_score = $1 WHERE id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Float4",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "cd089e6aff1c8c93a577f8f0cf1c7b58abdceeb0bef3dec9fe38b01e5ccf146b"
+}

@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO rlhf_events (id, task_id, original_output, amended_output, created_at)\n               VALUES ($1, $2, $3, $4, NOW())",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "606607222beb9ca2351b1d5b36e96bac8dc56d05e24633e14900ee0a740491da"
+}

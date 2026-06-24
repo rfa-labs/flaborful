@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE node_executions SET output_json = $1, dirty = true\n           WHERE id = (SELECT id FROM node_executions WHERE task_id = $2 AND node_id = $3\n                       ORDER BY attempt DESC LIMIT 1)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Jsonb",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "2cbfa45196627f35b58e02c0dc3152e3d559d577fa3f4b3f91a9fce9366fee8e"
+}

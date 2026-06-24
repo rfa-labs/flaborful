@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT\n            COUNT(DISTINCT j.id) FILTER (WHERE j.status IN ('trial','active'))   AS active_agents,\n            COUNT(t.id) FILTER (WHERE t.status = 'delivered'\n                AND t.delivered_at >= NOW() - INTERVAL '7 days')                 AS tasks_delivered_this_week,\n            COUNT(t.id) FILTER (WHERE t.status IN ('pending','running','awaiting_review')) AS tasks_pending,\n            COALESCE(SUM(\n                EXTRACT(EPOCH FROM (COALESCE(t.delivered_at, NOW()) - t.created_at))\n            ) FILTER (WHERE t.status = 'delivered'), 0)::float8                  AS total_seconds_active\n           FROM jobs j\n           LEFT JOIN tasks t ON t.job_id = j.id\n           WHERE j.company_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "active_agents",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "tasks_delivered_this_week",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "tasks_pending",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "total_seconds_active",
+        "type_info": "Float8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "6cd97b186f3aa61948a042edb504cd138eb431eb88743057666e6ebe248b4117"
+}

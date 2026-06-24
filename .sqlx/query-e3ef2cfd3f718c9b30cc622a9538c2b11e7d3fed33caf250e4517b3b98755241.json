@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT sprite_name FROM task_sprites WHERE task_id = $1 AND status NOT IN ('destroyed','gone')",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "sprite_name",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "e3ef2cfd3f718c9b30cc622a9538c2b11e7d3fed33caf250e4517b3b98755241"
+}

@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO node_messages (conversation_id, role, content) VALUES ($1, 'user', $2)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "5d1dc6e854b4e7050ffb630b419a1f311516a363dc6b1c2346e39b6badbbff16"
+}

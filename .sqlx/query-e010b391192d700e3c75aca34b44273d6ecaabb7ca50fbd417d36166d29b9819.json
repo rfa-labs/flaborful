@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO task_sprites (task_id, sprite_name, sprite_url, status, repo, branch, test_env_strategy)\n               VALUES ($1, $2, $3, 'running', $4, $5, $6)\n               ON CONFLICT (task_id) DO UPDATE SET\n                 sprite_name = EXCLUDED.sprite_name, sprite_url = EXCLUDED.sprite_url,\n                 status = 'running', repo = EXCLUDED.repo, branch = EXCLUDED.branch,\n                 test_env_strategy = EXCLUDED.test_env_strategy",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e010b391192d700e3c75aca34b44273d6ecaabb7ca50fbd417d36166d29b9819"
+}

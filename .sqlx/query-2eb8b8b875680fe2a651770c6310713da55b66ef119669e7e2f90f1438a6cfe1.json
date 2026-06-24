@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE task_sprites SET head_sha = $1 WHERE task_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "2eb8b8b875680fe2a651770c6310713da55b66ef119669e7e2f90f1438a6cfe1"
+}

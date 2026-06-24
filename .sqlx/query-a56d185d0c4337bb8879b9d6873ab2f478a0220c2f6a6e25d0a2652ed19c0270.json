@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE job_integrations SET is_active = FALSE WHERE job_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a56d185d0c4337bb8879b9d6873ab2f478a0220c2f6a6e25d0a2652ed19c0270"
+}

@@ -1,0 +1,1 @@
+ALTER TABLE invoices ALTER COLUMN hours_billed TYPE FLOAT8;

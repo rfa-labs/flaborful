@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO vault_notes\n                 (id, agent_id, slug, title, body, layer, source_type, visibility, related, job_id)\n               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)\n               ON CONFLICT (agent_id, slug) DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "TextArray",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "3c0277778f3b6cb5bfe002f19d4bdf4d04c92328f87fbfe68eb683102b833727"
+}

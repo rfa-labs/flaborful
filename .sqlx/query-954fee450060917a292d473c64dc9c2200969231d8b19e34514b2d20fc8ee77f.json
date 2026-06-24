@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE tasks SET status = 'running' WHERE id = $1 AND status = 'awaiting_review'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "954fee450060917a292d473c64dc9c2200969231d8b19e34514b2d20fc8ee77f"
+}

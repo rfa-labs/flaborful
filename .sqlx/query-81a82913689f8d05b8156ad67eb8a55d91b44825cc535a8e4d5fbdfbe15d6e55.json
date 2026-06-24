@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT scope_config FROM job_integrations\n               WHERE job_id = $1 AND tool_type = 'google_drive'::tool_type AND is_active = true\n               ORDER BY created_at DESC LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "scope_config",
+        "type_info": "Jsonb"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "81a82913689f8d05b8156ad67eb8a55d91b44825cc535a8e4d5fbdfbe15d6e55"
+}

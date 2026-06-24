@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT p.user_id\n           FROM jobs j\n           JOIN agents a ON a.id = j.agent_id\n           JOIN professionals p ON p.id = a.professional_id\n           WHERE j.id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "user_id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "abdde5123e787cf1d195a508331f8880fd5e6f631fef2afd4fc43caa936e28a0"
+}

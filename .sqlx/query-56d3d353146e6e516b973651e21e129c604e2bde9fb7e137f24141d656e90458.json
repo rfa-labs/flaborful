@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE tasks SET status = 'pending', current_node_id = NULL, output_draft = NULL, confidence_score = NULL WHERE id = $1 AND status <> 'delivered'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "56d3d353146e6e516b973651e21e129c604e2bde9fb7e137f24141d656e90458"
+}

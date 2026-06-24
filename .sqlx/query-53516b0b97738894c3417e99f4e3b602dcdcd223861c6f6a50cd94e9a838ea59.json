@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT\n            j.title, j.description, j.hourly_rate,\n            c.name AS company_name,\n            p.name AS professional_name,\n            pr.name AS profession_name\n           FROM jobs j\n           JOIN companies c ON c.id = j.company_id\n           JOIN agents a    ON a.id = j.agent_id\n           JOIN professionals p ON p.id = a.professional_id\n           JOIN professions pr  ON pr.id = p.profession_id\n           WHERE j.id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "title",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "description",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "hourly_rate",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 3,
+        "name": "company_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "professional_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "profession_name",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "53516b0b97738894c3417e99f4e3b602dcdcd223861c6f6a50cd94e9a838ea59"
+}

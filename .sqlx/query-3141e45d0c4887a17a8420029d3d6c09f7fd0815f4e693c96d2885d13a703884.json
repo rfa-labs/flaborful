@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE task_sprites SET status = 'destroyed', destroyed_at = NOW() WHERE task_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "3141e45d0c4887a17a8420029d3d6c09f7fd0815f4e693c96d2885d13a703884"
+}

@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT ts.task_id FROM task_sprites ts\n           JOIN tasks t ON t.id = ts.task_id\n           WHERE t.job_id = $1 AND ts.status NOT IN ('destroyed','gone')",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "task_id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "f977e98eb5e7b590a8e1fb218f755370bfb5b8a0cc51b7965a4496360d065ba7"
+}

@@ -1,0 +1,53 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id, status::text AS \"status!\", confidence_score, output_approved, delivered_at, updated_at\n                   FROM tasks\n                   WHERE job_id = $1\n                     AND ($2::timestamptz IS NULL OR updated_at > $2)\n                   ORDER BY updated_at ASC",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "status!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "confidence_score",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 3,
+        "name": "output_approved",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "delivered_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 5,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      true,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "7c227fe37b43035c4502afb6ef7828dbf4d7dcc259b5509600919ba4252deccf"
+}

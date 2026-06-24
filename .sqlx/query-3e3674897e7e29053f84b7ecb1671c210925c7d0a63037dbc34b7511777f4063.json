@@ -1,0 +1,53 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT repo, kind, status, detail, notes_count, created_at\n                   FROM ingestion_events\n                   WHERE agent_id = $1\n                     AND ($2::timestamptz IS NULL OR created_at > $2)\n                   ORDER BY created_at ASC",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "repo",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "status",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "detail",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "notes_count",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 5,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "3e3674897e7e29053f84b7ecb1671c210925c7d0a63037dbc34b7511777f4063"
+}

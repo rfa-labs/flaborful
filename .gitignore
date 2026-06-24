@@ -1,0 +1,28 @@
+# ── Secrets / env ──────────────────────────────────────────────
+.env
+*.env.local
+.env.*.local
+
+# ── Rust ───────────────────────────────────────────────────────
+/target
+runpod-worker/__pycache__/
+
+# ── Frontend (SvelteKit) ───────────────────────────────────────
+web/node_modules
+web/.svelte-kit
+web/build
+web/.vercel
+web/.output
+
+# ── Local caches / runtime ─────────────────────────────────────
+.fastembed_cache/
+
+# ── Editor / OS / tooling ──────────────────────────────────────
+.idea/
+.vscode/
+.DS_Store
+.claude/settings.local.json
+
+# ── Stray session transcripts (not part of the product) ────────
+2026-*-*.txt
+session-ses_*.md

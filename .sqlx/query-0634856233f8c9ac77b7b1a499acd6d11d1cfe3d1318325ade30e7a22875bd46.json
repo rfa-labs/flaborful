@@ -1,0 +1,58 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT\n            COUNT(DISTINCT j.id) FILTER (WHERE j.status IN ('trial','active')) AS active_jobs,\n            COUNT(DISTINCT j.id) FILTER (WHERE j.status = 'open')               AS open_jobs,\n            COUNT(t.id) FILTER (WHERE t.status = 'awaiting_review')           AS tasks_pending_review,\n            COUNT(t.id) FILTER (WHERE t.status = 'delivered'\n                AND t.delivered_at >= NOW() - INTERVAL '24 hours')             AS tasks_delivered_today,\n            COUNT(t.id) FILTER (WHERE t.status IN ('approved','amended','delivered')) AS total_approved_outputs,\n            (COUNT(t.id) FILTER (WHERE t.status = 'amended') * 100.0 /\n                NULLIF(COUNT(t.id) FILTER (WHERE t.status IN ('approved','amended','delivered')), 0)\n            )::float8                                                            AS amendment_rate,\n            AVG(t.confidence_score::float8) FILTER (WHERE t.confidence_score IS NOT NULL) AS avg_confidence_score\n           FROM agents a\n           JOIN jobs j ON j.agent_id = a.id\n           LEFT JOIN tasks t ON t.job_id = j.id\n           WHERE a.professional_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "active_jobs",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "open_jobs",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "tasks_pending_review",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "tasks_delivered_today",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "total_approved_outputs",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "amendment_rate",
+        "type_info": "Float8"
+      },
+      {
+        "ordinal": 6,
+        "name": "avg_confidence_score",
+        "type_info": "Float8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "0634856233f8c9ac77b7b1a499acd6d11d1cfe3d1318325ade30e7a22875bd46"
+}

@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT agent_runtime, runtime_spec FROM agents WHERE id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "agent_runtime",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "runtime_spec",
+        "type_info": "Jsonb"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      true
+    ]
+  },
+  "hash": "e06d8178a5a9cb1f514bb50f3bc8aab6d94b1bac67d387689478b8e4d705b044"
+}

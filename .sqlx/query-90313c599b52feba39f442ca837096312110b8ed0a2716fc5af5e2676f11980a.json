@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT EXISTS(\n              SELECT 1 FROM agents a\n              JOIN professionals p ON p.id = a.professional_id\n              WHERE a.id = $1 AND p.user_id = $2\n           )",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "exists",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "90313c599b52feba39f442ca837096312110b8ed0a2716fc5af5e2676f11980a"
+}

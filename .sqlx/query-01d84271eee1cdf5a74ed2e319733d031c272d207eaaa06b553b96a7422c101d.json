@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE node_executions SET status = 'awaiting_effect', pending_effect = $1 WHERE id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Jsonb",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "01d84271eee1cdf5a74ed2e319733d031c272d207eaaa06b553b96a7422c101d"
+}

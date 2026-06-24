@@ -1,0 +1,44 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT c.id, c.provider as \"provider: ConnectionProvider\", c.external_account\n        FROM connections c\n        JOIN professionals p ON p.user_id = c.user_id\n        JOIN agents a ON a.professional_id = p.id\n        WHERE a.id = $1\n        ORDER BY c.provider\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "provider: ConnectionProvider",
+        "type_info": {
+          "Custom": {
+            "name": "connection_provider",
+            "kind": {
+              "Enum": [
+                "github",
+                "google"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "external_account",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "69b22d7b1cc819a83567e930c7635a422bcde5ad00b122915c8961868acbb74f"
+}

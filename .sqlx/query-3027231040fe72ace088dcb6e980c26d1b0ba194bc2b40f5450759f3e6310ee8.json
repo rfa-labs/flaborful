@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE task_sprites SET status = 'gone' WHERE task_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "3027231040fe72ace088dcb6e980c26d1b0ba194bc2b40f5450759f3e6310ee8"
+}

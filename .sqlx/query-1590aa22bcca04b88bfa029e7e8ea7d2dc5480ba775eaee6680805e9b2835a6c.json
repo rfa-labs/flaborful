@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT u.id AS user_id, j.title AS job_title\n               FROM tasks t JOIN jobs j ON j.id = t.job_id\n               JOIN agents a ON a.id = j.agent_id\n               JOIN professionals p ON p.id = a.professional_id\n               JOIN users u ON u.id = p.user_id WHERE t.id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "user_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "job_title",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "1590aa22bcca04b88bfa029e7e8ea7d2dc5480ba775eaee6680805e9b2835a6c"
+}

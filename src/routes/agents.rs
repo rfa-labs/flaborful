@@ -1,0 +1,208 @@
+use crate::auth_extractor::AuthUser;
+use crate::services::knowledge::{ChunkVisibility, KnowledgeSourceType};
+use crate::services::lora_training::{ChunkPreview, DatasetFilter};
+use crate::services::{agents as svc, authz, lora_training};
+use crate::{
+    errors::AppResult,
+    models::agent::{Agent, AgentStatus, CreateAgentRequest},
+    AppState,
+};
+use axum::{
+    extract::{Path, State},
+    routing::{get, patch, post},
+    Json, Router,
+};
+use serde::Deserialize;
+use uuid::Uuid;
+
+pub fn router() -> Router<AppState> {
+    Router::new()
+        .route("/", post(create_agent))
+        .route("/mine", get(get_my_agent))
+        .route("/marketplace", get(list_marketplace))
+        .route("/:id", get(get_agent))
+        .route("/:id/status", patch(set_agent_status))
+        .route("/:id/retrain", post(retrain_agent))
+        .route("/:id/retrain/preview", post(preview_retrain))
+        .route("/:id/reset", post(reset_agent))
+        .route("/:id/execution", patch(set_execution))
+}
+
+#[derive(Deserialize)]
+struct SetExecutionBody {
+    /// managed | sprite
+    execution_backend: String,
+    /// claude_code | codex | custom
+    agent_runtime: String,
+    runtime_spec: Option<serde_json::Value>,
+}
+
+/// PATCH /agents/:id/execution — set the professional's default execution backend + runtime.
+async fn set_execution(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<Uuid>,
+    Json(body): Json<SetExecutionBody>,
+) -> AppResult<Json<serde_json::Value>> {
+    authz::require_agent_owner(&state.db, auth.user_id, id).await?;
+    if !matches!(body.execution_backend.as_str(), "managed" | "sprite") {
+        return Err(crate::errors::AppError::BadRequest(
+            "execution_backend must be managed or sprite".into(),
+        ));
+    }
+    if !matches!(
+        body.agent_runtime.as_str(),
+        "claude_code" | "codex" | "custom"
+    ) {
+        return Err(crate::errors::AppError::BadRequest(
+            "agent_runtime must be claude_code, codex, or custom".into(),
+        ));
+    }
+    sqlx::query!(
+        "UPDATE agents SET execution_backend = $1, agent_runtime = $2, runtime_spec = $3, updated_at = NOW() WHERE id = $4",
+        body.execution_backend,
+        body.agent_runtime,
+        body.runtime_spec,
+        id,
+    )
+    .execute(&state.db)
+    .await?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+#[derive(Deserialize)]
+struct SetStatusRequest {
+    status: AgentStatus,
+}
+
+/// Optional retraining selection. Absent/empty => entire knowledge base.
+#[derive(Deserialize, Default)]
+struct RetrainFilterBody {
+    source_types: Option<Vec<String>>,
+    chunk_ids: Option<Vec<Uuid>>,
+    visibility: Option<String>,
+}
+
+impl RetrainFilterBody {
+    fn into_filter(self) -> DatasetFilter {
+        let source_types = self.source_types.map(|types| {
+            types
+                .iter()
+                .filter_map(|s| parse_source_type(s))
+                .collect::<Vec<_>>()
+        });
+        let visibility = self.visibility.as_deref().and_then(|v| match v {
+            "shareable" => Some(ChunkVisibility::Shareable),
+            "private" => Some(ChunkVisibility::Private),
+            _ => None,
+        });
+        DatasetFilter {
+            source_types,
+            chunk_ids: self.chunk_ids,
+            visibility,
+        }
+    }
+}
+
+fn parse_source_type(s: &str) -> Option<KnowledgeSourceType> {
+    Some(match s {
+        "portfolio" => KnowledgeSourceType::Portfolio,
+        "job_context" => KnowledgeSourceType::JobContext,
+        "approved_output" => KnowledgeSourceType::ApprovedOutput,
+        "resume" => KnowledgeSourceType::Resume,
+        "application_material" => KnowledgeSourceType::ApplicationMaterial,
+        "interview_note" => KnowledgeSourceType::InterviewNote,
+        "chat_correction" => KnowledgeSourceType::ChatCorrection,
+        _ => return None,
+    })
+}
+
+async fn get_my_agent(State(state): State<AppState>, auth: AuthUser) -> AppResult<Json<Agent>> {
+    let professional = sqlx::query!(
+        "SELECT id FROM professionals WHERE user_id = $1",
+        auth.user_id
+    )
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| crate::errors::AppError::NotFound("Professional not found".into()))?;
+    let agent = svc::get_agent_by_professional(&state.db, professional.id).await?;
+    Ok(Json(agent))
+}
+
+async fn create_agent(
+    State(state): State<AppState>,
+    _auth: AuthUser,
+    Json(req): Json<CreateAgentRequest>,
+) -> AppResult<Json<Agent>> {
+    let agent = svc::create_agent(&state.db, req).await?;
+    Ok(Json(agent))
+}
+
+async fn get_agent(
+    State(state): State<AppState>,
+    axum::extract::Path(id): axum::extract::Path<uuid::Uuid>,
+) -> AppResult<Json<Agent>> {
+    let agent = svc::get_agent(&state.db, id).await?;
+    Ok(Json(agent))
+}
+
+async fn set_agent_status(
+    State(state): State<AppState>,
+    _auth: AuthUser,
+    axum::extract::Path(id): axum::extract::Path<uuid::Uuid>,
+    Json(req): Json<SetStatusRequest>,
+) -> AppResult<Json<Agent>> {
+    let agent = svc::set_agent_status(&state.db, id, req.status).await?;
+    Ok(Json(agent))
+}
+
+async fn list_marketplace(State(state): State<AppState>) -> AppResult<Json<Vec<Agent>>> {
+    let agents = svc::list_marketplace(&state.db).await?;
+    Ok(Json(agents))
+}
+
+/// POST /api/v1/agents/:id/retrain
+/// Triggers a new LoRA training job. An optional body selects which knowledge-base
+/// components to include; absent => the entire KB (original behavior).
+async fn retrain_agent(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<Uuid>,
+    body: Option<Json<RetrainFilterBody>>,
+) -> AppResult<Json<serde_json::Value>> {
+    authz::require_agent_owner(&state.db, auth.user_id, id).await?;
+    let filter = body.map(|Json(b)| b.into_filter()).unwrap_or_default();
+    lora_training::trigger_training_with_filter(&state.db, &state.inference, id, filter).await?;
+    Ok(Json(serde_json::json!({ "ok": true, "agent_id": id })))
+}
+
+/// POST /api/v1/agents/:id/retrain/preview
+/// Returns which chunks a given selection would include, without training.
+async fn preview_retrain(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<Uuid>,
+    body: Option<Json<RetrainFilterBody>>,
+) -> AppResult<Json<Vec<ChunkPreview>>> {
+    authz::require_agent_owner(&state.db, auth.user_id, id).await?;
+    let filter = body.map(|Json(b)| b.into_filter()).unwrap_or_default();
+    let preview = lora_training::preview_dataset(&state.qdrant, id, &filter)
+        .await
+        .map_err(crate::errors::AppError::Internal)?;
+    Ok(Json(preview))
+}
+
+/// POST /api/v1/agents/:id/reset
+/// Soft-resets the agent (wipes LoRA/R2, status→onboarding) while preserving the KB,
+/// so the owner can rebuild from scratch.
+async fn reset_agent(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<Uuid>,
+) -> AppResult<Json<serde_json::Value>> {
+    authz::require_agent_owner(&state.db, auth.user_id, id).await?;
+    lora_training::reset_agent(&state.db, id)
+        .await
+        .map_err(crate::errors::AppError::Internal)?;
+    Ok(Json(serde_json::json!({ "ok": true, "agent_id": id })))
+}
