@@ -100,7 +100,7 @@ pub async fn send_message(
             .await
             .unwrap_or_default();
         let query_vec = embeddings.into_iter().next().unwrap_or_default();
-        let chunks = knowledge::search_chunks(qdrant, query_vec, meta.agent_id, 4, 0.65)
+        let chunks = knowledge::search_chunks(qdrant, query_vec, "agent", meta.agent_id, 4, 0.65)
             .await
             .unwrap_or_default();
         chunks
@@ -207,6 +207,7 @@ pub async fn apply_correction(
         let note = crate::services::vault::VaultNote {
             id: Uuid::new_v4(),
             agent_id,
+            owner_kind: "agent".into(),
             slug: format!(
                 "correction-{}-{}",
                 task_id.simple(),

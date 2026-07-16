@@ -51,16 +51,16 @@
   <button class="btn-ghost text-sm mb-6" on:click={() => goto('/studio')}>← Studio</button>
 
   <h1 class="text-2xl font-bold mb-1">Payouts</h1>
-  <p class="text-gray-500 text-sm mb-8">Your earnings after the 15% platform fee.</p>
+  <p class="text-sand-500 text-sm mb-8">Your earnings after the 15% platform fee.</p>
 
   <!-- Summary cards -->
   <div class="grid sm:grid-cols-2 gap-4 mb-8">
     <div class="card p-5">
-      <div class="text-sm text-gray-500 mb-1">Total paid out</div>
+      <div class="text-sm text-sand-500 mb-1">Total paid out</div>
       <div class="text-3xl font-bold text-green-600">${(totalPaid / 100).toFixed(2)}</div>
     </div>
     <div class="card p-5">
-      <div class="text-sm text-gray-500 mb-1">Pending</div>
+      <div class="text-sm text-sand-500 mb-1">Pending</div>
       <div class="text-3xl font-bold text-yellow-600">${(totalPending / 100).toFixed(2)}</div>
     </div>
   </div>
@@ -68,19 +68,19 @@
   {#if loading}
     <div class="space-y-3">
       {#each Array(3) as _}
-        <div class="card p-4 animate-pulse"><div class="h-10 bg-gray-100 rounded"></div></div>
+        <div class="card p-4 animate-pulse"><div class="h-10 bg-sand-100 rounded"></div></div>
       {/each}
     </div>
   {:else if error}
     <div class="card p-6 text-center text-red-600">{error}</div>
   {:else if payouts.length === 0}
-    <div class="card p-12 text-center text-gray-400 text-sm">
+    <div class="card p-12 text-center text-sand-400 text-sm">
       No payouts yet. Payouts are generated weekly when jobs are billed.
     </div>
   {:else}
     <div class="card">
       <table class="w-full text-sm">
-        <thead class="bg-gray-50 text-xs text-gray-500 uppercase tracking-wide">
+        <thead class="bg-sand-50 text-xs text-sand-500 uppercase tracking-wide">
           <tr>
             <th class="px-5 py-3 text-left">Date</th>
             <th class="px-5 py-3 text-right">Amount</th>
@@ -88,17 +88,17 @@
             <th class="px-5 py-3 text-left">Sent</th>
           </tr>
         </thead>
-        <tbody class="divide-y divide-gray-100">
+        <tbody class="divide-y divide-sand-100">
           {#each payouts as p}
-            <tr class="hover:bg-gray-50">
-              <td class="px-5 py-3 text-gray-700">{timeAgo(p.created_at)}</td>
-              <td class="px-5 py-3 text-right font-medium text-gray-900">${(p.amount / 100).toFixed(2)}</td>
+            <tr class="hover:bg-sand-50">
+              <td class="px-5 py-3 text-sand-700">{timeAgo(p.created_at)}</td>
+              <td class="px-5 py-3 text-right font-medium text-sand-900">${(p.amount / 100).toFixed(2)}</td>
               <td class="px-5 py-3">
                 <span class="badge-{p.status === 'sent' ? 'green' : p.status === 'failed' ? 'red' : 'yellow'}">
                   {p.status}
                 </span>
               </td>
-              <td class="px-5 py-3 text-gray-400">{p.sent_at ? timeAgo(p.sent_at) : '—'}</td>
+              <td class="px-5 py-3 text-sand-400">{p.sent_at ? timeAgo(p.sent_at) : '—'}</td>
             </tr>
           {/each}
         </tbody>

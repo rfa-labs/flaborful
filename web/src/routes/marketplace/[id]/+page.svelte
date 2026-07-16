@@ -33,13 +33,13 @@
   <div class="max-w-4xl mx-auto px-4 py-10">
     <div class="card p-8 animate-pulse">
       <div class="flex items-center gap-4 mb-6">
-        <div class="w-20 h-20 rounded-full bg-gray-200"></div>
+        <div class="w-20 h-20 rounded-full bg-sand-200"></div>
         <div class="flex-1">
-          <div class="h-6 bg-gray-200 rounded w-48 mb-2"></div>
-          <div class="h-4 bg-gray-100 rounded w-32"></div>
+          <div class="h-6 bg-sand-200 rounded w-48 mb-2"></div>
+          <div class="h-4 bg-sand-100 rounded w-32"></div>
         </div>
       </div>
-      <div class="h-24 bg-gray-100 rounded"></div>
+      <div class="h-24 bg-sand-100 rounded"></div>
     </div>
   </div>
 {:else if error || !listing}
@@ -63,7 +63,7 @@
               <h1 class="text-2xl font-bold mb-0.5">{listing.professional_name}</h1>
               <div class="text-brand-600 font-medium mb-2">{listing.profession_name}</div>
               {#if listing.bio}
-                <p class="text-gray-600 text-sm leading-relaxed">{listing.bio}</p>
+                <p class="text-sand-600 text-sm leading-relaxed">{listing.bio}</p>
               {/if}
             </div>
           </div>
@@ -85,11 +85,11 @@
           <div class="grid grid-cols-2 gap-6">
             <div class="text-center">
               <div class="text-3xl font-bold text-brand-600">{listing.completed_jobs}</div>
-              <div class="text-sm text-gray-500 mt-1">Completed jobs</div>
+              <div class="text-sm text-sand-500 mt-1">Completed jobs</div>
             </div>
             <div class="text-center">
               <div class="text-3xl font-bold text-brand-600">{listing.approved_outputs}</div>
-              <div class="text-sm text-gray-500 mt-1">Approved outputs</div>
+              <div class="text-sm text-sand-500 mt-1">Approved outputs</div>
             </div>
           </div>
         </div>
@@ -97,7 +97,7 @@
         <!-- How it works -->
         <div class="card p-5">
           <h2 class="font-semibold mb-3">What you're hiring</h2>
-          <ul class="space-y-2 text-sm text-gray-600">
+          <ul class="space-y-2 text-sm text-sand-600">
             {#each [
               'An AI agent trained on this professional\'s actual work history and style',
               'Every output reviewed and approved by the professional before delivery',
@@ -117,13 +117,13 @@
       <!-- Discovery card: hiring happens via job postings + applications -->
       <div class="space-y-4">
         <div class="card p-5 sticky top-20">
-          <div class="text-3xl font-bold text-gray-900 mb-1">{formatRate(listing.hourly_rate)}</div>
-          <div class="text-sm text-gray-500 mb-5">Typical rate · billed weekly · 15% platform fee</div>
+          <div class="text-3xl font-bold text-sand-900 mb-1">{formatRate(listing.hourly_rate)}</div>
+          <div class="text-sm text-sand-500 mb-5">Typical rate · billed weekly · 15% platform fee</div>
 
           <button class="btn-primary w-full py-3 text-base" on:click={() => goto('/hire/jobs/new')}>
             Post a job
           </button>
-          <p class="text-xs text-gray-400 text-center mt-3">
+          <p class="text-xs text-sand-400 text-center mt-3">
             Post a role and this professional can apply with their agent. You choose who to hire.
           </p>
         </div>

@@ -17,16 +17,19 @@
   export let graph: VaultGraph;
   export let height = 460;
 
+  // Functional category colors — they distinguish note layers at a glance, so most are left as
+  // meaningful hues. Only the brand-default (style_rule) and the neutral note/locked greys are
+  // aligned to the new warm palette.
   const layerColor: Record<string, string> = {
-    style_rule: '#a78bfa',
+    style_rule: '#7c4dff',
     golden_snippet: '#f59e0b',
     architecture: '#2dd4bf',
     feature: '#38bdf8',
     pattern: '#60a5fa',
     tech: '#34d399',
-    note: '#94a3b8',
+    note: '#b4a396',
   };
-  const LOCKED = '#94a3b8';
+  const LOCKED = '#b4a396';
 
   // Simulation node/link shapes (d3 mutates x/y/vx/vy onto these).
   interface SimNode extends VaultGraphNode { x: number; y: number; vx?: number; vy?: number; fx?: number | null; fy?: number | null; deg: number }
@@ -187,7 +190,7 @@
       if (overlaps) continue;
       placed.push(box);
       ctx.globalAlpha = isHighlighted(n.slug) ? 0.92 : 0.25;
-      ctx.fillStyle = '#e5e7eb';
+      ctx.fillStyle = '#ece0d6';
       ctx.fillText(label, lx, ly);
     }
     ctx.restore();
@@ -294,17 +297,17 @@
   onDestroy(() => { sim?.stop(); window.removeEventListener('resize', resize); });
 </script>
 
-<div class="rounded-lg border border-gray-800 overflow-hidden bg-[#0f1117]">
-  <div class="flex items-center justify-between px-3 py-2 border-b border-gray-800 bg-[#15171e]">
-    <span class="text-xs font-semibold text-gray-300 uppercase tracking-wide">Knowledge vault graph</span>
+<div class="rounded-lg border border-sand-800 overflow-hidden bg-[#0f1117]">
+  <div class="flex items-center justify-between px-3 py-2 border-b border-sand-800 bg-[#15171e]">
+    <span class="text-xs font-semibold text-sand-300 uppercase tracking-wide">Knowledge vault graph</span>
     <div class="flex items-center gap-3">
-      <span class="text-[11px] text-gray-500">{graph.nodes.length} notes · {sharedCount()} shared · {graph.edges.length} links</span>
-      <button class="text-[11px] text-gray-400 hover:text-gray-200" on:click={fitView}>Fit ⤢</button>
+      <span class="text-[11px] text-sand-500">{graph.nodes.length} notes · {sharedCount()} shared · {graph.edges.length} links</span>
+      <button class="text-[11px] text-sand-400 hover:text-sand-200" on:click={fitView}>Fit ⤢</button>
     </div>
   </div>
 
   {#if graph.nodes.length === 0}
-    <div class="p-8 text-center text-sm text-gray-500">No vault notes yet.</div>
+    <div class="p-8 text-center text-sm text-sand-500">No vault notes yet.</div>
   {:else}
     <div bind:this={wrap} class="relative" style="height: {height}px">
       <canvas
@@ -314,28 +317,28 @@
         on:mouseleave={onLeave}
         class="block w-full cursor-grab"
       ></canvas>
-      <div class="absolute bottom-2 left-3 text-[10px] text-gray-600 pointer-events-none">
+      <div class="absolute bottom-2 left-3 text-[10px] text-sand-600 pointer-events-none">
         drag nodes · scroll to zoom · hover to highlight neighbors
       </div>
     </div>
 
     {#if selected}
-      <div class="border-t border-gray-800 p-3 bg-[#15171e]">
+      <div class="border-t border-sand-800 p-3 bg-[#15171e]">
         {#if selected.locked}
-          <div class="text-sm text-gray-400">
+          <div class="text-sm text-sand-400">
             🔒 <span class="font-medium">{selected.title}</span> — this note wasn't shared with you.
-            <span class="text-gray-600">({selected.layer.replace(/_/g, ' ')})</span>
+            <span class="text-sand-600">({selected.layer.replace(/_/g, ' ')})</span>
           </div>
         {:else}
           <div class="flex items-center gap-2 mb-1">
-            <span class="text-sm font-semibold text-gray-100">{selected.title}</span>
-            <span class="text-[10px] uppercase tracking-wide text-gray-900 px-1.5 py-0.5 rounded"
+            <span class="text-sm font-semibold text-sand-100">{selected.title}</span>
+            <span class="text-[10px] uppercase tracking-wide text-sand-900 px-1.5 py-0.5 rounded"
               style="background: {layerColor[selected.layer] ?? layerColor.note}">{selected.layer.replace(/_/g, ' ')}</span>
-            {#if selected.domain}<span class="text-[10px] text-gray-500">{selected.domain}</span>{/if}
-            <button class="ml-auto text-xs text-gray-500 hover:text-gray-300" on:click={() => (selected = null)}>✕</button>
+            {#if selected.domain}<span class="text-[10px] text-sand-500">{selected.domain}</span>{/if}
+            <button class="ml-auto text-xs text-sand-500 hover:text-sand-300" on:click={() => (selected = null)}>✕</button>
           </div>
           {#if selected.body}
-            <pre class="whitespace-pre-wrap break-words text-sm text-gray-300 max-h-72 overflow-y-auto">{selected.body}</pre>
+            <pre class="whitespace-pre-wrap break-words text-sm text-sand-300 max-h-72 overflow-y-auto">{selected.body}</pre>
           {/if}
         {/if}
       </div>

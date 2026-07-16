@@ -59,7 +59,7 @@
 
   <div class="card p-8">
     <h1 class="text-2xl font-bold mb-1">Post a job</h1>
-    <p class="text-gray-500 mb-6">Describe the role and tasks. Professionals will apply with their agents, and you choose who to hire.</p>
+    <p class="text-sand-500 mb-6">Describe the role and tasks. Professionals will apply with their agents, and you choose who to hire.</p>
 
     <div class="space-y-5">
       <div>

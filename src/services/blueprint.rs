@@ -16,11 +16,16 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::services::inference::InferenceClient;
-use crate::services::vault::{self, NoteLayer, RetrievalFilter};
+use crate::services::vault::{self, NoteLayer, RetrievalFilter, VaultOverlay};
 
 /// Build the Execution Blueprint for a task. Returns markdown to prepend to the builder's
 /// instructions, or an empty string if the vault has nothing relevant (the builder then runs as
 /// before, consulting the principal directly).
+///
+/// `overlays` are read-only company repo vault(s) composed into this task; when present, the
+/// blueprint also pulls the company's feature/architecture/pattern/tech notes for those repos and
+/// includes them under a "Company context for this repo" section, so the agent starts grounded in
+/// the real codebase it's about to work on.
 pub async fn build_blueprint(
     db: &PgPool,
     qdrant: &Qdrant,
@@ -29,6 +34,7 @@ pub async fn build_blueprint(
     lora_name: Option<&str>,
     persona_prompt: &str,
     task_text: &str,
+    overlays: &[VaultOverlay],
 ) -> Result<String> {
     // Pull the three layers most relevant to this task from the vault.
     let style = retrieve_layer(
@@ -62,7 +68,11 @@ pub async fn build_blueprint(
     )
     .await;
 
-    if style.is_empty() && arch.is_empty() && snippets.is_empty() {
+    // Company context: the composed company repo vault(s), if any. Pull feature/architecture/
+    // pattern/tech notes scoped to the overlay repos.
+    let company_ctx = retrieve_company_context(db, qdrant, inference, overlays, task_text).await;
+
+    if style.is_empty() && arch.is_empty() && snippets.is_empty() && company_ctx.is_empty() {
         return Ok(String::new());
     }
 
@@ -71,16 +81,24 @@ pub async fn build_blueprint(
         "{persona}\n\nYou are preparing an Execution Blueprint for a coding agent that will do a \
          task on your behalf. Distill the retrieved notes below into a tight, actionable brief of \
          YOUR standing preferences — how you write code, your architectural patterns, and the \
-         exemplary snippets worth emulating — scoped to the task. Be concrete and prescriptive; \
-         omit anything irrelevant to the task. Output markdown with sections: \
-         '## Standing style rules', '## Architecture map', '## Golden snippets'.",
+         exemplary snippets worth emulating — scoped to the task. If 'Company context' notes are \
+         present, summarize the relevant facts about THAT codebase the agent must respect, in a \
+         '## Company context for this repo' section. Be concrete and prescriptive; omit anything \
+         irrelevant to the task. Output markdown with sections: '## Standing style rules', \
+         '## Architecture map', '## Golden snippets', and (only if company context exists) \
+         '## Company context for this repo'.",
         persona = persona_prompt,
     );
+    let company_block = if company_ctx.is_empty() {
+        String::new()
+    } else {
+        format!("\n\n# Company context (the repo you're working on)\n{company_ctx}")
+    };
     let user =
         format!(
         "# Task\n{task}\n\n# Retrieved style rules\n{style}\n\n# Retrieved architecture notes\n\
-         {arch}\n\n# Retrieved golden snippets\n{snippets}",
-        task = task_text, style = style, arch = arch, snippets = snippets,
+         {arch}\n\n# Retrieved golden snippets\n{snippets}{company}",
+        task = task_text, style = style, arch = arch, snippets = snippets, company = company_block,
     );
 
     let distilled = inference.worker(&system, &user, lora_name).await?;
@@ -88,6 +106,40 @@ pub async fn build_blueprint(
         "# Execution Blueprint (your standing preferences)\n{}",
         distilled.trim()
     ))
+}
+
+/// Retrieve the company repo vault context for the task: feature/architecture/pattern/tech notes
+/// from each overlay owner, scoped to that overlay's repos. Best-effort; returns "" on no overlays.
+async fn retrieve_company_context(
+    db: &PgPool,
+    qdrant: &Qdrant,
+    inference: &InferenceClient,
+    overlays: &[VaultOverlay],
+    task_text: &str,
+) -> String {
+    let mut blocks = Vec::new();
+    for ov in overlays {
+        for layer in [
+            NoteLayer::Feature,
+            NoteLayer::Architecture,
+            NoteLayer::Pattern,
+            NoteLayer::Tech,
+        ] {
+            let filter = RetrievalFilter {
+                layer: Some(layer),
+                repos: ov.repos.clone(),
+                ..Default::default()
+            };
+            if let Ok(hits) =
+                vault::retrieve(db, qdrant, inference, ov.owner, task_text, &filter, 4).await
+            {
+                for h in hits {
+                    blocks.push(format!("### {}\n{}", h.note.title, h.note.body));
+                }
+            }
+        }
+    }
+    blocks.join("\n\n")
 }
 
 /// Retrieve and concatenate the bodies of the top notes in one layer for the task. Best-effort:
@@ -103,10 +155,19 @@ async fn retrieve_layer(
 ) -> String {
     let filter = RetrievalFilter {
         layer: Some(layer),
-        domain: None,
-        shareable_only: false,
+        ..Default::default()
     };
-    match vault::retrieve(db, qdrant, inference, agent_id, task_text, &filter, k).await {
+    match vault::retrieve(
+        db,
+        qdrant,
+        inference,
+        crate::services::vault::VaultOwner::Agent(agent_id),
+        task_text,
+        &filter,
+        k,
+    )
+    .await
+    {
         Ok(hits) => hits
             .iter()
             .map(|h| format!("### {}\n{}", h.note.title, h.note.body))

@@ -44,7 +44,13 @@ async fn ensure_collection(client: &Qdrant, name: &str) -> Result<()> {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct KnowledgeChunk {
     pub id: Uuid,
+    /// The vault OWNER id. For `owner_kind == "agent"` this is the agent id (the historical
+    /// meaning, unchanged); for `owner_kind == "company"` it's the company id. Application
+    /// snapshots filter on this for the professional path, so the field name stays.
     pub agent_id: Uuid,
+    /// Discriminates the owner namespace: "agent" (a professional's vault) or "company" (a
+    /// company's per-repo vault). Legacy chunks with no payload value default to "agent".
+    pub owner_kind: String,
     pub job_id: Option<Uuid>,
     pub content: String,
     pub source_type: KnowledgeSourceType,
@@ -141,6 +147,7 @@ pub async fn upsert_chunks(
         .map(|(chunk, embedding)| {
             let payload: HashMap<String, qdrant_client::qdrant::Value> = [
                 ("agent_id".to_string(), chunk.agent_id.to_string().into()),
+                ("owner_kind".to_string(), chunk.owner_kind.clone().into()),
                 ("content".to_string(), chunk.content.into()),
                 (
                     "source_type".to_string(),
@@ -167,11 +174,14 @@ pub async fn upsert_chunks(
     Ok(())
 }
 
-/// Semantic search: find the top-K most relevant chunks for a given query embedding.
+/// Semantic search: find the top-K most relevant chunks for a given query embedding, scoped to
+/// one vault owner. `owner_kind` is "agent" or "company"; `owner_id` is that owner's id (the
+/// chunk payload's `agent_id`). Legacy chunks (no owner_kind payload) read back as "agent".
 pub async fn search_chunks(
     client: &Qdrant,
     query_embedding: Vec<f32>,
-    agent_id: Uuid,
+    owner_kind: &str,
+    owner_id: Uuid,
     limit: u64,
     score_threshold: f32,
 ) -> Result<Vec<KnowledgeChunk>> {
@@ -189,7 +199,7 @@ pub async fn search_chunks(
         .result
         .into_iter()
         .filter_map(|p| chunk_from_point(p.id, p.payload))
-        .filter(|c| c.agent_id == agent_id)
+        .filter(|c| c.agent_id == owner_id && c.owner_kind == owner_kind)
         .collect();
 
     Ok(chunks)
@@ -215,7 +225,8 @@ pub async fn list_chunks_for_agent(client: &Qdrant, agent_id: Uuid) -> Result<Ve
 
         for point in resp.result {
             if let Some(chunk) = chunk_from_point(point.id, point.payload) {
-                if chunk.agent_id == agent_id {
+                // Professional path (LoRA dataset / backfill): agent vaults only.
+                if chunk.agent_id == agent_id && chunk.owner_kind == "agent" {
                     all_chunks.push(chunk);
                 }
             }
@@ -257,7 +268,7 @@ pub async fn fetch_chunks_by_ids(
         .result
         .into_iter()
         .filter_map(|p| chunk_from_point(p.id, p.payload))
-        .filter(|c| c.agent_id == agent_id)
+        .filter(|c| c.agent_id == agent_id && c.owner_kind == "agent")
         .filter(|c| !shareable_only || c.visibility == ChunkVisibility::Shareable)
         .collect();
 
@@ -268,7 +279,7 @@ pub async fn fetch_chunks_by_ids(
 /// callers should not fail their main operation if this logging fails.
 pub async fn record_event(
     db: &sqlx::PgPool,
-    agent_id: Uuid,
+    owner: crate::services::vault::VaultOwner,
     chunk_id: Uuid,
     event_type: &str,
     source_type: &KnowledgeSourceType,
@@ -276,9 +287,10 @@ pub async fn record_event(
 ) -> Result<()> {
     let summary: String = summary.chars().take(200).collect();
     sqlx::query!(
-        r#"INSERT INTO knowledge_events (agent_id, chunk_id, event_type, source_type, summary)
-           VALUES ($1, $2, $3, $4, $5)"#,
-        agent_id,
+        r#"INSERT INTO knowledge_events (owner_kind, agent_id, chunk_id, event_type, source_type, summary)
+           VALUES ($1, $2, $3, $4, $5, $6)"#,
+        owner.kind_str(),
+        owner.id(),
         chunk_id,
         event_type,
         source_type_str(source_type),
@@ -384,6 +396,8 @@ fn chunk_from_point(
     };
 
     let agent_id = Uuid::parse_str(&get("agent_id")?).ok()?;
+    // Legacy chunks (written before composable vaults) have no owner_kind → "agent".
+    let owner_kind = get("owner_kind").unwrap_or_else(|| "agent".to_string());
     let content = get("content")?;
     let source_type = match get("source_type")?.as_str() {
         "portfolio" => KnowledgeSourceType::Portfolio,
@@ -405,6 +419,7 @@ fn chunk_from_point(
     Some(KnowledgeChunk {
         id,
         agent_id,
+        owner_kind,
         job_id,
         content,
         source_type,

@@ -9,6 +9,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::errors::{AppError, AppResult};
+use crate::services::vault::VaultOwner;
 
 /// Resolve the company owned by this user. Errors if the user has no company.
 pub async fn require_company(db: &PgPool, user_id: Uuid) -> AppResult<Uuid> {
@@ -94,4 +95,38 @@ pub async fn require_agent_owner(db: &PgPool, user_id: Uuid, agent_id: Uuid) -> 
         ));
     }
     Ok(())
+}
+
+/// Assert the caller owns the specific `company_id` (companies are 1:1 with users via
+/// `companies.user_id`). Used by the company-vault routes, where the company id is in the path.
+pub async fn require_company_owner(
+    db: &PgPool,
+    user_id: Uuid,
+    company_id: Uuid,
+) -> AppResult<()> {
+    let owns = sqlx::query_scalar!(
+        "SELECT EXISTS(SELECT 1 FROM companies WHERE id = $1 AND user_id = $2)",
+        company_id,
+        user_id
+    )
+    .fetch_one(db)
+    .await?
+    .unwrap_or(false);
+
+    if !owns {
+        return Err(AppError::Forbidden(
+            "This company belongs to another user".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Assert the caller owns the given vault, dispatching on owner kind. Agent vaults are owned by
+/// the professional; company vaults by the company's user.
+#[allow(dead_code)] // convenience dispatcher; routes currently call the kind-specific guard directly
+pub async fn require_vault_owner(db: &PgPool, user_id: Uuid, owner: VaultOwner) -> AppResult<()> {
+    match owner {
+        VaultOwner::Agent(agent_id) => require_agent_owner(db, user_id, agent_id).await,
+        VaultOwner::Company(company_id) => require_company_owner(db, user_id, company_id).await,
+    }
 }

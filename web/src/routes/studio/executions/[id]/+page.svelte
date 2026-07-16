@@ -26,12 +26,12 @@
 
   // Node type registry — same palette as the workflow editor, plus a canvas-kind helper.
   const NODE_TYPES: Record<string, { label: string; color: string }> = {
-    trigger: { label: 'Trigger', color: '#6366f1' },
-    llm_reasoning: { label: 'LLM Reasoning', color: '#8b5cf6' },
+    trigger: { label: 'Trigger', color: '#7c4dff' },
+    llm_reasoning: { label: 'LLM Reasoning', color: '#6a34ff' },
     human_gate: { label: 'Human Gate', color: '#f59e0b' },
-    conditional_branch: { label: 'Branch', color: '#6366f1' },
+    conditional_branch: { label: 'Branch', color: '#7c4dff' },
     output: { label: 'Output', color: '#10b981' },
-    formatter: { label: 'Formatter', color: '#6366f1' },
+    formatter: { label: 'Formatter', color: '#7c4dff' },
     github: { label: 'GitHub', color: '#1f2937' },
     diff_analyzer: { label: 'Diff Analyzer', color: '#1f2937' },
     stack_trace_parser: { label: 'Stack Trace', color: '#1f2937' },
@@ -287,19 +287,19 @@
 
 <div class="h-[calc(100vh-56px)] flex flex-col">
   <!-- Toolbar -->
-  <div class="bg-white border-b border-gray-200 px-4 py-2 flex items-center gap-3 z-10">
+  <div class="bg-white border-b border-sand-200 px-4 py-2 flex items-center gap-3 z-10">
     <button class="btn-ghost text-sm" on:click={() => goto('/studio/executions')}>← Executions</button>
-    <div class="h-4 w-px bg-gray-200"></div>
+    <div class="h-4 w-px bg-sand-200"></div>
     {#if task}
       <span class="text-sm font-semibold">Task {task.id.slice(0, 8)}</span>
       <span class="badge-{task.status === 'delivered' ? 'green' : task.status === 'failed' ? 'red' : task.status === 'awaiting_review' ? 'yellow' : 'blue'} text-xs capitalize">{task.status.replace(/_/g, ' ')}</span>
     {/if}
     <div class="flex-1"></div>
     <!-- Legend -->
-    <div class="flex items-center gap-3 text-xs text-gray-500">
+    <div class="flex items-center gap-3 text-xs text-sand-500">
       <span class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-full" style="background:#10b981"></span>done</span>
       <span class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-full" style="background:#f59e0b"></span>current</span>
-      <span class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-full" style="background:#d1d5db"></span>pending</span>
+      <span class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-full" style="background:#dccabc"></span>pending</span>
       <span class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-full" style="background:#ef4444"></span>failed</span>
     </div>
   </div>
@@ -307,19 +307,19 @@
   <div class="flex-1 flex overflow-hidden relative">
     <!-- Inspector -->
     {#if selectedNode}
-      <div class="absolute right-4 top-4 z-20 bg-white rounded-xl border border-gray-200 shadow-lg w-96 max-h-[85vh] overflow-y-auto">
-        <div class="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
+      <div class="absolute right-4 top-4 z-20 bg-white rounded-xl border border-sand-200 shadow-lg w-96 max-h-[85vh] overflow-y-auto">
+        <div class="px-4 py-3 border-b border-sand-100 flex items-center justify-between">
           <div>
             <span class="font-semibold text-sm">{selectedNode.label}</span>
-            <span class="block text-xs text-gray-400">{canvasKind(selectedNode).replace(/_/g, ' ')}</span>
+            <span class="block text-xs text-sand-400">{canvasKind(selectedNode).replace(/_/g, ' ')}</span>
           </div>
-          <button class="text-gray-400 hover:text-gray-600 text-lg leading-none" on:click={() => selectedNode = null}>×</button>
+          <button class="text-sand-400 hover:text-sand-600 text-lg leading-none" on:click={() => selectedNode = null}>×</button>
         </div>
         <div class="p-4 space-y-3 text-sm">
           <div class="flex items-center gap-2 flex-wrap">
             <span class="w-2.5 h-2.5 rounded-full shrink-0" style="background:{ringColor(nodeStatus(selectedNode.id))}"></span>
             <span class="capitalize">{nodeStatus(selectedNode.id).replace(/_/g, ' ')}</span>
-            {#if selectedExec && selectedExec.attempt > 1}<span class="text-xs text-gray-400">attempt {selectedExec.attempt}</span>{/if}
+            {#if selectedExec && selectedExec.attempt > 1}<span class="text-xs text-sand-400">attempt {selectedExec.attempt}</span>{/if}
             {#if !gateExec && didSideEffect(selectedExec)}
               <span class="badge-yellow text-xs" title="This node performed an external write">⚡ side effect applied</span>
             {/if}
@@ -374,17 +374,17 @@
 
           {#if selectedExec}
             <div>
-              <div class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Input</div>
+              <div class="text-xs font-semibold text-sand-500 uppercase tracking-wide mb-1">Input</div>
               <NodeOutput value={selectedExec.input_json} />
             </div>
             <div>
-              <div class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Output</div>
+              <div class="text-xs font-semibold text-sand-500 uppercase tracking-wide mb-1">Output</div>
               <NodeOutput value={selectedExec.output_json} />
             </div>
             {#if selectedExec.logs}
               <div>
-                <div class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Logs</div>
-                <pre class="bg-gray-50 rounded p-2 text-xs whitespace-pre-wrap break-words max-h-32 overflow-y-auto">{selectedExec.logs}</pre>
+                <div class="text-xs font-semibold text-sand-500 uppercase tracking-wide mb-1">Logs</div>
+                <pre class="bg-sand-50 rounded p-2 text-xs whitespace-pre-wrap break-words max-h-32 overflow-y-auto">{selectedExec.logs}</pre>
               </div>
             {/if}
 
@@ -398,18 +398,18 @@
             {/if}
 
             <!-- Chat about this node's work -->
-            <div class="border-t border-gray-100 pt-3">
+            <div class="border-t border-sand-100 pt-3">
               {#if !chatOpen}
                 <button class="btn-secondary text-xs w-full" on:click={openChat}>💬 Chat about this work</button>
               {:else}
-                <div class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Chat with your agent</div>
+                <div class="text-xs font-semibold text-sand-500 uppercase tracking-wide mb-2">Chat with your agent</div>
                 <div class="space-y-2 max-h-56 overflow-y-auto mb-2">
                   {#each chatMessages as m (m.id)}
-                    <div class="text-xs rounded-lg px-2.5 py-1.5 {m.role === 'user' ? 'bg-brand-50 text-brand-900 ml-6' : 'bg-gray-100 text-gray-700 mr-6'}">
+                    <div class="text-xs rounded-lg px-2.5 py-1.5 {m.role === 'user' ? 'bg-brand-50 text-brand-900 ml-6' : 'bg-sand-100 text-sand-700 mr-6'}">
                       {m.content}
                     </div>
                   {/each}
-                  {#if chatSending}<div class="text-xs text-gray-400">Agent is thinking…</div>{/if}
+                  {#if chatSending}<div class="text-xs text-sand-400">Agent is thinking…</div>{/if}
                 </div>
                 <div class="flex gap-1.5 mb-3">
                   <input class="input text-xs flex-1" placeholder="Ask the agent to fix or revise…"
@@ -419,7 +419,7 @@
                 </div>
 
                 <!-- Apply a correction -->
-                <div class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Corrected output</div>
+                <div class="text-xs font-semibold text-sand-500 uppercase tracking-wide mb-1">Corrected output</div>
                 <textarea class="input text-xs min-h-[80px] resize-y" bind:value={correctionText}
                   placeholder="Edit the work here, then apply. This stages the change; downstream nodes are marked for re-run."></textarea>
                 <button class="btn-secondary text-xs w-full mt-1.5" disabled={applying || !correctionText.trim()} on:click={applyCorrection}>
@@ -428,7 +428,7 @@
               {/if}
             </div>
           {:else}
-            <p class="text-xs text-gray-400">This node hasn't run yet.</p>
+            <p class="text-xs text-sand-400">This node hasn't run yet.</p>
           {/if}
         </div>
       </div>
@@ -436,11 +436,11 @@
 
     <!-- Canvas -->
     {#if loading}
-      <div class="flex-1 flex items-center justify-center text-gray-400">Loading execution…</div>
+      <div class="flex-1 flex items-center justify-center text-sand-400">Loading execution…</div>
     {:else if error}
       <div class="flex-1 flex items-center justify-center text-red-500">{error}</div>
     {:else if nodes.length === 0}
-      <div class="flex-1 flex items-center justify-center text-gray-400">No workflow attached to this task.</div>
+      <div class="flex-1 flex items-center justify-center text-sand-400">No workflow attached to this task.</div>
     {:else}
       <div class="flex-1">
         <Svelvet

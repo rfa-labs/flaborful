@@ -10,7 +10,7 @@ use crate::services::authz;
 use crate::services::knowledge::{
     self, list_chunks_for_agent, ChunkVisibility, KnowledgeSourceType,
 };
-use crate::services::vault::{self, NoteLayer, VaultNote};
+use crate::services::vault::{self, NoteLayer, VaultNote, VaultOwner};
 use crate::{
     auth_extractor::AuthUser,
     errors::{AppError, AppResult},
@@ -116,6 +116,7 @@ async fn set_resume(
     let note = VaultNote {
         id: Uuid::new_v4(),
         agent_id,
+        owner_kind: "agent".into(),
         slug: "resume".into(),
         title: "Resume".into(),
         body: body.resume_text.clone(),
@@ -184,7 +185,7 @@ async fn delete_chunk(
         .map_err(AppError::Internal)?;
     let _ = knowledge::record_event(
         &state.db,
-        chunk.agent_id,
+        VaultOwner::Agent(chunk.agent_id),
         chunk_id,
         "deleted",
         &chunk.source_type,
@@ -214,7 +215,7 @@ async fn timeline(
     authz::require_agent_owner(&state.db, auth.user_id, agent_id).await?;
     let rows = sqlx::query!(
         r#"SELECT id, chunk_id, event_type, source_type, summary, created_at
-           FROM knowledge_events WHERE agent_id = $1 ORDER BY created_at DESC"#,
+           FROM knowledge_events WHERE owner_kind = 'agent' AND agent_id = $1 ORDER BY created_at DESC"#,
         agent_id
     )
     .fetch_all(&state.db)
@@ -272,7 +273,7 @@ async fn list_notes(
     Path(agent_id): Path<Uuid>,
 ) -> AppResult<Json<Vec<NoteView>>> {
     authz::require_agent_owner(&state.db, auth.user_id, agent_id).await?;
-    let notes = vault::list_notes_for_agent(&state.db, agent_id)
+    let notes = vault::list_notes_for_owner(&state.db, VaultOwner::Agent(agent_id))
         .await
         .map_err(AppError::Internal)?;
     Ok(Json(notes.iter().map(note_view).collect()))
@@ -292,7 +293,7 @@ async fn get_note_route(
     Path((agent_id, slug)): Path<(Uuid, String)>,
 ) -> AppResult<Json<NoteDetail>> {
     authz::require_agent_owner(&state.db, auth.user_id, agent_id).await?;
-    let note = vault::get_note(&state.db, agent_id, &slug)
+    let note = vault::get_note(&state.db, VaultOwner::Agent(agent_id), &slug)
         .await
         .map_err(AppError::Internal)?
         .ok_or_else(|| AppError::NotFound("Note not found".into()))?;
@@ -323,7 +324,7 @@ async fn put_note_route(
     authz::require_agent_owner(&state.db, auth.user_id, agent_id).await?;
 
     // Preserve the existing note's id + source_type when editing in place.
-    let existing = vault::get_note(&state.db, agent_id, &slug)
+    let existing = vault::get_note(&state.db, VaultOwner::Agent(agent_id), &slug)
         .await
         .map_err(AppError::Internal)?;
     let (id, source_type, prev_vis) = match &existing {
@@ -352,6 +353,7 @@ async fn put_note_route(
     let note = VaultNote {
         id,
         agent_id,
+        owner_kind: "agent".into(),
         slug,
         title: body.title,
         body: body.body,
@@ -381,7 +383,7 @@ async fn delete_note_route(
     Path((agent_id, slug)): Path<(Uuid, String)>,
 ) -> AppResult<Json<serde_json::Value>> {
     authz::require_agent_owner(&state.db, auth.user_id, agent_id).await?;
-    vault::delete_note(&state.db, &state.qdrant, agent_id, &slug)
+    vault::delete_note(&state.db, &state.qdrant, VaultOwner::Agent(agent_id), &slug)
         .await
         .map_err(AppError::Internal)?;
     Ok(Json(serde_json::json!({ "status": "deleted" })))
@@ -400,9 +402,10 @@ async fn reindex_agent_route(
         vault::backfill_from_qdrant(&state.db, &state.qdrant, &state.inference, agent_id)
             .await
             .map_err(AppError::Internal)?;
-    let reindexed = vault::reindex_agent(&state.db, &state.qdrant, &state.inference, agent_id)
-        .await
-        .map_err(AppError::Internal)?;
+    let reindexed =
+        vault::reindex_owner(&state.db, &state.qdrant, &state.inference, VaultOwner::Agent(agent_id))
+            .await
+            .map_err(AppError::Internal)?;
     Ok(Json(
         serde_json::json!({ "backfilled": backfilled, "reindexed": reindexed }),
     ))
@@ -417,7 +420,7 @@ async fn repair_links_route(
     Path(agent_id): Path<Uuid>,
 ) -> AppResult<Json<serde_json::Value>> {
     authz::require_agent_owner(&state.db, auth.user_id, agent_id).await?;
-    let links_repaired = vault::repair_related_links(&state.db, agent_id)
+    let links_repaired = vault::repair_related_links(&state.db, VaultOwner::Agent(agent_id))
         .await
         .map_err(AppError::Internal)?;
     Ok(Json(serde_json::json!({ "links_repaired": links_repaired })))
@@ -455,7 +458,7 @@ async fn vault_graph(
     Path(agent_id): Path<Uuid>,
 ) -> AppResult<Json<VaultGraph>> {
     authz::require_agent_owner(&state.db, auth.user_id, agent_id).await?;
-    let notes = vault::list_notes_for_agent(&state.db, agent_id)
+    let notes = vault::list_notes_for_owner(&state.db, VaultOwner::Agent(agent_id))
         .await
         .map_err(AppError::Internal)?;
     let slugs: std::collections::HashSet<&str> = notes.iter().map(|n| n.slug.as_str()).collect();

@@ -71,8 +71,8 @@ async fn mcp_handler(
                 .cloned()
                 .unwrap_or(json!({}));
 
-            let agent_id = match taste::resolve_agent(&state.db, &token).await {
-                Ok(a) => a,
+            let (owner, overlays) = match taste::resolve_vault_scope(&state.db, &token).await {
+                Ok(s) => s,
                 Err(e) => {
                     return tool_result(id, &format!("Vault auth failed: {e}"), true)
                         .into_response()
@@ -83,7 +83,8 @@ async fn mcp_handler(
                 &state.db,
                 &state.qdrant,
                 &state.inference,
-                agent_id,
+                owner,
+                &overlays,
                 tool,
                 &args,
             )

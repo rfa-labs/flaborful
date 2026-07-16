@@ -36,7 +36,7 @@
   <div class="flex items-center justify-between mb-6">
     <div>
       <h1 class="text-2xl font-bold">Job board</h1>
-      <p class="text-gray-500 text-sm mt-0.5">Open roles companies are hiring agents for. Apply with your agent.</p>
+      <p class="text-sand-500 text-sm mt-0.5">Open roles companies are hiring agents for. Apply with your agent.</p>
     </div>
     <button class="btn-ghost text-sm" on:click={() => goto('/studio')}>← Studio</button>
   </div>
@@ -53,11 +53,11 @@
   {#if loading}
     <div class="space-y-3">
       {#each Array(3) as _}
-        <div class="card p-6 animate-pulse"><div class="h-16 bg-gray-100 rounded"></div></div>
+        <div class="card p-6 animate-pulse"><div class="h-16 bg-sand-100 rounded"></div></div>
       {/each}
     </div>
   {:else if jobs.length === 0}
-    <div class="card p-12 text-center text-gray-400">
+    <div class="card p-12 text-center text-sand-400">
       <div class="text-4xl mb-3">📋</div>
       No open jobs right now. Check back soon.
     </div>
@@ -71,13 +71,13 @@
           <div class="flex items-start justify-between gap-4">
             <div class="flex-1 min-w-0">
               <h2 class="font-semibold">{job.title}</h2>
-              <div class="text-xs text-gray-400 mt-0.5 flex items-center gap-2">
+              <div class="text-xs text-sand-400 mt-0.5 flex items-center gap-2">
                 {#if job.profession_id}<span>{professionName(job.profession_id)}</span><span>·</span>{/if}
                 <span>${(job.hourly_rate / 100).toFixed(0)}/hr</span>
                 <span>·</span>
                 <span>posted {new Date(job.created_at).toLocaleDateString()}</span>
               </div>
-              <p class="text-sm text-gray-600 mt-2 line-clamp-2">{job.description}</p>
+              <p class="text-sm text-sand-600 mt-2 line-clamp-2">{job.description}</p>
             </div>
             <span class="text-sm text-brand-600 shrink-0">Apply →</span>
           </div>

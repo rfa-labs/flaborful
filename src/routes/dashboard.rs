@@ -7,10 +7,16 @@ use serde::Serialize;
 use uuid::Uuid;
 
 use crate::{
+    auth_extractor::AuthUser,
     errors::{AppError, AppResult},
+    services::authz,
     AppState,
 };
 
+/// A dashboard aggregates its owner's private business data (earnings, pending reviews,
+/// deliveries), so each summary is readable only by the professional/company it describes.
+/// Both handlers were previously unauthenticated — any caller could pull either side's
+/// dashboard by guessing a UUID.
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/professional/:professional_id", get(professional_summary))
@@ -44,8 +50,17 @@ struct PendingTaskSummary {
 
 async fn professional_summary(
     State(state): State<AppState>,
+    auth: AuthUser,
     Path(professional_id): Path<Uuid>,
 ) -> AppResult<Json<ProfessionalDashboard>> {
+    // The caller may only read their own professional dashboard.
+    let caller = authz::require_professional(&state.db, auth.user_id).await?;
+    if caller != professional_id {
+        return Err(AppError::Forbidden(
+            "This dashboard belongs to another professional".into(),
+        ));
+    }
+
     // Agent status
     let agent = sqlx::query!(
         "SELECT status::text AS status FROM agents WHERE professional_id = $1",
@@ -127,8 +142,12 @@ struct RecentDelivery {
 
 async fn company_summary(
     State(state): State<AppState>,
+    auth: AuthUser,
     Path(company_id): Path<Uuid>,
 ) -> AppResult<Json<CompanyDashboard>> {
+    // The caller may only read their own company's dashboard.
+    authz::require_company_owner(&state.db, auth.user_id, company_id).await?;
+
     let stats = sqlx::query!(
         r#"SELECT
             COUNT(DISTINCT j.id) FILTER (WHERE j.status IN ('trial','active'))   AS active_agents,

@@ -327,6 +327,7 @@ async fn ingest_application_material(
     let note = crate::services::vault::VaultNote {
         id: Uuid::new_v4(),
         agent_id,
+        owner_kind: "agent".into(),
         slug: format!(
             "application-{}-{}",
             job_id.simple(),
@@ -369,6 +370,7 @@ pub async fn ingest_interview_note(
     let vnote = crate::services::vault::VaultNote {
         id: Uuid::new_v4(),
         agent_id,
+        owner_kind: "agent".into(),
         slug: format!("interview-{}-{}", job_id.simple(), Uuid::new_v4().simple()),
         title: note
             .lines()

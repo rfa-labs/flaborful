@@ -1,0 +1,13 @@
+# Keep the build context small and hermetic. The Rust `COPY . .` would otherwise ship a
+# multi-GB target/ dir, and the web stage rebuilds node_modules/build itself via `npm ci`.
+**/target
+**/node_modules
+**/.svelte-kit
+web/build
+**/.git
+.env
+.fastembed_cache
+.idea
+**/.DS_Store
+Dockerfile
+.dockerignore

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT COUNT(*) FROM vault_notes WHERE agent_id = $1 AND repo = $2",
+  "query": "SELECT COUNT(*) FROM vault_notes WHERE owner_kind = $1 AND agent_id = $2 AND repo = $3",
   "describe": {
     "columns": [
       {
@@ -11,6 +11,7 @@
     ],
     "parameters": {
       "Left": [
+        "Text",
         "Uuid",
         "Text"
       ]
@@ -19,5 +20,5 @@
       null
     ]
   },
-  "hash": "e1d8aae352156946b6f8b5b68d12550b40ae78d6830b4e03e546f15422ee5e4d"
+  "hash": "f603bcdc42f2e82d74c6de04d5fe72c0267c6c75f9e6282202893d9146d150b5"
 }

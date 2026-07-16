@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO vault_notes\n             (id, owner_kind, agent_id, slug, title, body, layer, source_type, visibility, domain, related, repo, job_id, updated_at)\n           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13, NOW())\n           ON CONFLICT (owner_kind, agent_id, slug) DO UPDATE SET\n             title = EXCLUDED.title, body = EXCLUDED.body, layer = EXCLUDED.layer,\n             source_type = EXCLUDED.source_type, visibility = EXCLUDED.visibility,\n             domain = EXCLUDED.domain, related = EXCLUDED.related, repo = EXCLUDED.repo,\n             job_id = EXCLUDED.job_id, updated_at = NOW()",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Uuid",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "TextArray",
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "7e99f55ab090c3bfd03806d162cbe94ebe93c90b34394914ea6736f88ef9e2a3"
+}

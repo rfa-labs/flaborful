@@ -44,7 +44,6 @@ pub fn router() -> Router<AppState> {
         .route("/agent/:agent_id", get(list_for_agent))
 }
 
-// TODO: extract company_id from JWT claims — for now accept from body
 #[derive(Deserialize)]
 struct CreateJobBody {
     // company_id may be present for backward-compat but is ignored — the job is always

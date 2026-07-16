@@ -213,12 +213,25 @@
   // SSE task feed
   let taskEventSource: EventSource | null = null;
 
+  // Repos the company has documented in its knowledge vault — a task targeting one gets that
+  // knowledge composed into the hired agent's context. Drives the "📚 context" chip below.
+  let documentedRepos = new Set<string>();
+  async function loadDocumentedRepos(companyId: string) {
+    try {
+      const notes = await api.get<Array<{ repo: string | null }>>(`/companies/${companyId}/vault/notes`);
+      documentedRepos = new Set(notes.map(n => n.repo).filter((r): r is string => !!r));
+    } catch { /* best-effort — no chip if we can't tell */ }
+  }
+  const taskRepoOf = (t: Task): string | null =>
+    typeof t.target?.repo === 'string' ? (t.target.repo as string) : null;
+
   onMount(async () => {
     try {
       [job, tasks] = await Promise.all([
         api.get<Job>(`/jobs/${jobId}`),
         api.get<Task[]>(`/tasks/job/${jobId}`),
       ]);
+      if (job?.company_id) loadDocumentedRepos(job.company_id);
       // Returning from the company GitHub OAuth lands back on the Integrations tab.
       const tabParam = $page.url.searchParams.get('tab');
       if (tabParam === 'integrations') {
@@ -458,7 +471,7 @@
   <button class="btn-ghost text-sm mb-6" on:click={() => goto('/hire')}>← Hire Desk</button>
 
   {#if loading}
-    <div class="card p-8 animate-pulse"><div class="h-32 bg-gray-100 rounded"></div></div>
+    <div class="card p-8 animate-pulse"><div class="h-32 bg-sand-100 rounded"></div></div>
   {:else if error || !job}
     <div class="card p-8 text-center text-red-600">{error || 'Not found'}</div>
   {:else}
@@ -467,12 +480,12 @@
       <div class="flex items-start justify-between gap-4">
         <div class="flex-1">
           <h1 class="text-2xl font-bold mb-1">{job.title}</h1>
-          <p class="text-gray-500 text-sm mb-3">{job.description}</p>
+          <p class="text-sand-500 text-sm mb-3">{job.description}</p>
           <div class="flex items-center gap-3 text-sm">
             <StatusBadge status={job.status} />
-            <span class="text-gray-400">${(job.hourly_rate / 100).toFixed(0)}/hr</span>
+            <span class="text-sand-400">${(job.hourly_rate / 100).toFixed(0)}/hr</span>
             {#if job.started_at}
-              <span class="text-gray-400">Started {new Date(job.started_at).toLocaleDateString()}</span>
+              <span class="text-sand-400">Started {new Date(job.started_at).toLocaleDateString()}</span>
             {/if}
           </div>
         </div>
@@ -491,7 +504,7 @@
     </div>
 
     <!-- Tabs -->
-    <div class="flex gap-1 mb-6 bg-gray-100 rounded-lg p-1 w-fit">
+    <div class="flex gap-1 mb-6 bg-sand-100 rounded-lg p-1 w-fit">
       {#each [
         { key: 'applicants', label: 'Applicants' },
         { key: 'tasks', label: 'Tasks' },
@@ -501,7 +514,7 @@
         { key: 'audit', label: 'Audit log' },
       ] as tab}
         <button
-          class="px-4 py-1.5 rounded-md text-sm font-medium transition-colors {activeTab === tab.key ? 'bg-white shadow text-gray-900' : 'text-gray-500 hover:text-gray-700'}"
+          class="px-4 py-1.5 rounded-md text-sm font-medium transition-colors {activeTab === tab.key ? 'bg-white shadow text-sand-900' : 'text-sand-500 hover:text-sand-700'}"
           on:click={() => setTab(tab.key)}>
           {tab.label}
         </button>
@@ -511,9 +524,9 @@
     <!-- Applicants tab -->
     {#if activeTab === 'applicants'}
       {#if loadingApplicants}
-        <div class="card p-8 animate-pulse"><div class="h-32 bg-gray-100 rounded"></div></div>
+        <div class="card p-8 animate-pulse"><div class="h-32 bg-sand-100 rounded"></div></div>
       {:else if applicants.length === 0}
-        <div class="card p-8 text-center text-gray-400 text-sm">
+        <div class="card p-8 text-center text-sand-400 text-sm">
           No applicants yet. Professionals who apply to this posting will appear here.
         </div>
       {:else}
@@ -528,16 +541,16 @@
                 <div class="flex-1 min-w-0">
                   <div class="flex items-center gap-2 flex-wrap">
                     <span class="font-semibold">{a.professional_name}</span>
-                    <span class="text-xs text-gray-400">{a.profession_name}</span>
+                    <span class="text-xs text-sand-400">{a.profession_name}</span>
                     <span class="badge-{app.status === 'selected' ? 'green' : app.status === 'rejected' ? 'red' : app.status === 'interviewing' ? 'blue' : 'gray'} text-xs capitalize">{app.status}</span>
                   </div>
-                  <div class="text-xs text-gray-500 mt-1 flex items-center gap-3 flex-wrap">
+                  <div class="text-xs text-sand-500 mt-1 flex items-center gap-3 flex-wrap">
                     {#if a.hourly_rate}<span>${(a.hourly_rate / 100).toFixed(0)}/hr</span>{/if}
                     {#if a.years_experience}<span>{a.years_experience}y exp</span>{/if}
                     <span>{a.completed_jobs} jobs done</span>
                     <span>{a.approved_outputs} approved outputs</span>
                   </div>
-                  {#if a.bio}<p class="text-sm text-gray-600 mt-2">{a.bio}</p>{/if}
+                  {#if a.bio}<p class="text-sm text-sand-600 mt-2">{a.bio}</p>{/if}
                 </div>
                 <div class="flex flex-col gap-1.5 shrink-0">
                   {#if app.status !== 'selected' && job.status === 'reviewing'}
@@ -547,33 +560,33 @@
                     {expandedApplicant === app.id ? 'Hide details' : 'View application'}
                   </button>
                   {#if app.status === 'applied'}
-                    <button class="text-xs text-gray-400 hover:text-gray-600" on:click={() => setApplicantStatus(app.id, 'shortlisted')}>Shortlist</button>
+                    <button class="text-xs text-sand-400 hover:text-sand-600" on:click={() => setApplicantStatus(app.id, 'shortlisted')}>Shortlist</button>
                   {/if}
                 </div>
               </div>
 
               {#if expandedApplicant === app.id}
-                <div class="mt-4 pt-4 border-t border-gray-100 space-y-4">
+                <div class="mt-4 pt-4 border-t border-sand-100 space-y-4">
                   <!-- Cover letter -->
                   {#if app.cover_letter}
                     <div>
-                      <div class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Cover letter</div>
-                      <p class="text-sm text-gray-700 whitespace-pre-wrap">{app.cover_letter}</p>
+                      <div class="text-xs font-semibold text-sand-500 uppercase tracking-wide mb-1">Cover letter</div>
+                      <p class="text-sm text-sand-700 whitespace-pre-wrap">{app.cover_letter}</p>
                     </div>
                   {/if}
 
                   <!-- Resume -->
                   {#if app.resume_text}
                     <div>
-                      <div class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Resume</div>
-                      <p class="text-sm text-gray-700 whitespace-pre-wrap max-h-48 overflow-y-auto bg-gray-50 rounded p-2">{app.resume_text}</p>
+                      <div class="text-xs font-semibold text-sand-500 uppercase tracking-wide mb-1">Resume</div>
+                      <p class="text-sm text-sand-700 whitespace-pre-wrap max-h-48 overflow-y-auto bg-sand-50 rounded p-2">{app.resume_text}</p>
                     </div>
                   {/if}
 
                   <!-- Self-intro video -->
                   {#if app.video_url}
                     <div>
-                      <div class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Self-intro video</div>
+                      <div class="text-xs font-semibold text-sand-500 uppercase tracking-wide mb-1">Self-intro video</div>
                       <a class="text-sm text-brand-600 hover:underline break-all" href={app.video_url} target="_blank" rel="noopener">{app.video_url}</a>
                     </div>
                   {/if}
@@ -581,7 +594,7 @@
                   <!-- Knowledge vault graph (IP-safe: shared notes openable, private ones locked) -->
                   <div>
                     <div class="flex items-center justify-between mb-1">
-                      <div class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Knowledge vault</div>
+                      <div class="text-xs font-semibold text-sand-500 uppercase tracking-wide">Knowledge vault</div>
                       {#if !vaultGraphs[a.application.id]}
                         <button class="text-xs text-brand-600 hover:underline" on:click={() => loadVaultGraph(a.application.id)}>
                           Show graph →
@@ -589,7 +602,7 @@
                       {/if}
                     </div>
                     {#if vaultGraphs[a.application.id] === 'loading'}
-                      <p class="text-xs text-gray-400">Loading graph…</p>
+                      <p class="text-xs text-sand-400">Loading graph…</p>
                     {:else if vaultGraphs[a.application.id] === 'error'}
                       <p class="text-xs text-red-400">Couldn't load the vault graph.</p>
                     {:else}
@@ -603,13 +616,13 @@
                   <!-- Shared knowledge (owner-curated, IP-safe) — full content, not snippets -->
                   {#if a.shared_knowledge.length > 0}
                     <div>
-                      <div class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Shared work samples ({a.shared_knowledge.length})</div>
+                      <div class="text-xs font-semibold text-sand-500 uppercase tracking-wide mb-1">Shared work samples ({a.shared_knowledge.length})</div>
                       <div class="space-y-2">
                         {#each a.shared_knowledge as chunk}
                           {@const isOpen = openSample === chunk.id}
-                          <div class="bg-gray-50 rounded p-2 text-sm text-gray-700">
+                          <div class="bg-sand-50 rounded p-2 text-sm text-sand-700">
                             <div class="flex items-center justify-between mb-0.5">
-                              <span class="text-[10px] uppercase tracking-wide text-gray-400">{chunk.source_type.replace(/_/g, ' ')}</span>
+                              <span class="text-[10px] uppercase tracking-wide text-sand-400">{chunk.source_type.replace(/_/g, ' ')}</span>
                               <button class="text-[11px] text-brand-600 hover:underline"
                                 on:click={() => openSample = isOpen ? null : chunk.id}>
                                 {isOpen ? 'Collapse' : 'Read full'}
@@ -621,16 +634,16 @@
                       </div>
                     </div>
                   {:else}
-                    <p class="text-xs text-gray-400">This applicant didn't attach work samples.</p>
+                    <p class="text-xs text-sand-400">This applicant didn't attach work samples.</p>
                   {/if}
 
                   <!-- Interview scheduling -->
                   <div>
-                    <div class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Interview (optional)</div>
+                    <div class="text-xs font-semibold text-sand-500 uppercase tracking-wide mb-1">Interview (optional)</div>
                     {#if app.meeting_link}
-                      <div class="text-sm text-gray-700 mb-2">
+                      <div class="text-sm text-sand-700 mb-2">
                         Scheduled: <a class="text-brand-600 hover:underline break-all" href={app.meeting_link} target="_blank" rel="noopener">{app.meeting_link}</a>
-                        {#if app.meeting_at}<span class="text-gray-400"> · {new Date(app.meeting_at).toLocaleString()}</span>{/if}
+                        {#if app.meeting_at}<span class="text-sand-400"> · {new Date(app.meeting_at).toLocaleString()}</span>{/if}
                       </div>
                     {/if}
                     <div class="flex flex-wrap gap-2 items-end">
@@ -685,7 +698,7 @@
                 <input class="input text-sm" id="task-repo" bind:value={taskRepo}
                   placeholder="owner/name" />
                 {#if !companyGithub}
-                  <p class="text-xs text-gray-400 mt-1">
+                  <p class="text-xs text-sand-400 mt-1">
                     Connect your GitHub in the <button type="button" class="text-brand-600 underline"
                       on:click={() => setTab('integrations')}>Integrations</button> tab to pick from your repos.
                   </p>
@@ -715,25 +728,36 @@
 
       <div class="card">
         {#if tasks.length === 0}
-          <div class="p-8 text-center text-gray-400 text-sm">No tasks yet. Create one above.</div>
+          <div class="p-8 text-center text-sand-400 text-sm">No tasks yet. Create one above.</div>
         {:else}
           <table class="w-full text-sm">
-            <thead class="bg-gray-50 text-xs text-gray-500 uppercase tracking-wide">
+            <thead class="bg-sand-50 text-xs text-sand-500 uppercase tracking-wide">
               <tr>
                 <th class="px-5 py-3 text-left">Status</th>
+                <th class="px-5 py-3 text-left">Repo</th>
                 <th class="px-5 py-3 text-left">Created</th>
                 <th class="px-5 py-3 text-left">Confidence</th>
                 <th class="px-5 py-3 text-left">Delivered</th>
                 <th class="px-5 py-3"></th>
               </tr>
             </thead>
-            <tbody class="divide-y divide-gray-100">
+            <tbody class="divide-y divide-sand-100">
               {#each tasks as t}
-                <tr class="hover:bg-gray-50 transition-colors">
+                <tr class="hover:bg-sand-50 transition-colors">
                   <td class="px-5 py-3"><StatusBadge status={t.status} /></td>
-                  <td class="px-5 py-3 text-gray-500">{timeAgo(t.created_at)}</td>
+                  <td class="px-5 py-3">
+                    {#if taskRepoOf(t)}
+                      <span class="font-mono text-xs text-sand-600">{taskRepoOf(t)}</span>
+                      {#if documentedRepos.has(taskRepoOf(t) ?? '')}
+                        <span class="badge-green text-[10px] ml-1" title="This repo's company knowledge vault is attached to the agent for this task">📚 context</span>
+                      {/if}
+                    {:else}
+                      <span class="text-sand-300">—</span>
+                    {/if}
+                  </td>
+                  <td class="px-5 py-3 text-sand-500">{timeAgo(t.created_at)}</td>
                   <td class="px-5 py-3"><ConfidenceBadge score={t.confidence_score} /></td>
-                  <td class="px-5 py-3 text-gray-500">
+                  <td class="px-5 py-3 text-sand-500">
                     {t.delivered_at ? timeAgo(t.delivered_at) : '—'}
                   </td>
                   <td class="px-5 py-3 text-right">
@@ -760,7 +784,7 @@
           </div>
 
           {#if showAddIntegration}
-            <div class="bg-gray-50 rounded-lg p-4 mb-4 space-y-3">
+            <div class="bg-sand-50 rounded-lg p-4 mb-4 space-y-3">
               <div>
                 <label class="label text-xs" for="tool">Tool</label>
                 <select class="input text-sm" id="tool" bind:value={intTool} on:change={() => intError = ''}>
@@ -774,21 +798,21 @@
                 <!-- Connection-backed grant: the agent acts as its owner. The company
                      grants access to the owner's account rather than pasting a token. -->
                 {#if matchingConnection}
-                  <div class="flex items-center gap-2 bg-white border border-gray-200 rounded-lg px-3 py-2.5 text-sm">
+                  <div class="flex items-center gap-2 bg-white border border-sand-200 rounded-lg px-3 py-2.5 text-sm">
                     <span class="w-2 h-2 rounded-full bg-green-400 shrink-0"></span>
-                    <span class="text-gray-700">Agent's {requiredProvider} account:</span>
-                    <span class="font-medium text-gray-900 truncate">{matchingConnection.external_account}</span>
+                    <span class="text-sand-700">Agent's {requiredProvider} account:</span>
+                    <span class="font-medium text-sand-900 truncate">{matchingConnection.external_account}</span>
                   </div>
 
                   {#if intTool === 'github'}
-                    <div class="text-xs text-gray-500 bg-blue-50 border border-blue-100 rounded-lg p-3 leading-relaxed">
+                    <div class="text-xs text-sand-500 bg-blue-50 border border-blue-100 rounded-lg p-3 leading-relaxed">
                       <p class="font-medium text-blue-800 mb-1">To grant access:</p>
                       Add <span class="font-mono text-blue-700">{matchingConnection.external_account}</span> as a
                       collaborator (or org member) on the repos the agent should work in, on GitHub.
                       The agent commits and opens PRs as that user — you review and merge.
                     </div>
                   {:else if intTool === 'google_drive'}
-                    <div class="text-xs text-gray-500 bg-blue-50 border border-blue-100 rounded-lg p-3 leading-relaxed">
+                    <div class="text-xs text-sand-500 bg-blue-50 border border-blue-100 rounded-lg p-3 leading-relaxed">
                       <p class="font-medium text-blue-800 mb-1">To grant access:</p>
                       In Google Drive, open your <strong>Shared Drive</strong> → Manage members → add
                       <span class="font-mono text-blue-700">{matchingConnection.external_account}</span> as
@@ -799,10 +823,10 @@
                       <label class="label text-xs" for="drive-id">Shared Drive ID</label>
                       <input class="input text-sm font-mono" id="drive-id" bind:value={sharedDriveId}
                         placeholder="0AHk...VA" />
-                      <p class="text-xs text-gray-400 mt-1">From the Shared Drive URL: drive.google.com/drive/folders/<strong>&lt;this part&gt;</strong></p>
+                      <p class="text-xs text-sand-400 mt-1">From the Shared Drive URL: drive.google.com/drive/folders/<strong>&lt;this part&gt;</strong></p>
                     </div>
                     <div>
-                      <label class="label text-xs" for="folder-id">Target folder ID <span class="text-gray-400 font-normal">(optional)</span></label>
+                      <label class="label text-xs" for="folder-id">Target folder ID <span class="text-sand-400 font-normal">(optional)</span></label>
                       <input class="input text-sm font-mono" id="folder-id" bind:value={parentFolderId}
                         placeholder="defaults to drive root" />
                     </div>
@@ -823,7 +847,7 @@
                   <input class="input text-sm font-mono" id="token" type="password" bind:value={intToken}
                     placeholder={intTool === 'slack' ? 'xoxb-...' : 'token...'} />
                   {#if intTool === 'slack'}
-                    <p class="text-xs text-gray-400 mt-1">Create a Slack app at api.slack.com, add chat:write scope, and install to your workspace</p>
+                    <p class="text-xs text-sand-400 mt-1">Create a Slack app at api.slack.com, add chat:write scope, and install to your workspace</p>
                   {/if}
                 </div>
               {/if}
@@ -845,15 +869,15 @@
 
           <!-- Active integrations list -->
           {#if loadingIntegrations}
-            <div class="animate-pulse h-10 bg-gray-100 rounded"></div>
+            <div class="animate-pulse h-10 bg-sand-100 rounded"></div>
           {:else if integrations.length > 0}
-            <div class="divide-y divide-gray-100 mb-4">
+            <div class="divide-y divide-sand-100 mb-4">
               {#each integrations as int}
                 <div class="flex items-center justify-between py-3">
                   <div class="flex items-center gap-3">
                     <span class="w-2 h-2 rounded-full bg-green-400"></span>
                     <span class="text-sm font-medium capitalize">{int.tool_type.replace(/_/g, ' ')}</span>
-                    <span class="text-xs text-gray-400">connected {new Date(int.created_at).toLocaleDateString()}</span>
+                    <span class="text-xs text-sand-400">connected {new Date(int.created_at).toLocaleDateString()}</span>
                   </div>
                   <button class="text-xs text-red-500 hover:text-red-700" on:click={() => revokeIntegration(int.id)}>
                     Revoke
@@ -862,10 +886,10 @@
               {/each}
             </div>
           {:else}
-            <p class="text-sm text-gray-400 mb-4">No tools connected yet.</p>
+            <p class="text-sm text-sand-400 mb-4">No tools connected yet.</p>
           {/if}
 
-          <p class="text-xs text-gray-400">
+          <p class="text-xs text-sand-400">
             Credentials are encrypted with AES-256-GCM and scoped exclusively to this job.
           </p>
         </div>
@@ -875,7 +899,7 @@
              The agent commits/opens PRs as the professional — so it must be a collaborator. -->
         <div class="card p-5">
           <h2 class="font-semibold mb-1">Repository access</h2>
-          <p class="text-sm text-gray-500 mb-4">
+          <p class="text-sm text-sand-500 mb-4">
             Connect your GitHub to list your repos, then add the hired professional as a
             collaborator on the ones this agent will work in. The agent commits and opens PRs as
             that user — you review and merge.
@@ -886,10 +910,10 @@
               Connect your GitHub
             </button>
           {:else}
-            <div class="flex items-center gap-2 bg-white border border-gray-200 rounded-lg px-3 py-2.5 text-sm mb-3">
+            <div class="flex items-center gap-2 bg-white border border-sand-200 rounded-lg px-3 py-2.5 text-sm mb-3">
               <span class="w-2 h-2 rounded-full bg-green-400 shrink-0"></span>
-              <span class="text-gray-700">Your GitHub:</span>
-              <span class="font-medium text-gray-900">{companyGithub.external_account}</span>
+              <span class="text-sand-700">Your GitHub:</span>
+              <span class="font-medium text-sand-900">{companyGithub.external_account}</span>
               <button class="ml-auto text-xs text-red-500 hover:text-red-700 shrink-0"
                 on:click={disconnectCompanyGithub}>
                 Disconnect
@@ -897,8 +921,8 @@
             </div>
 
             {#if professionalGithub}
-              <p class="text-xs text-gray-500 mb-3">
-                Add <span class="font-mono text-gray-800">{professionalGithub}</span>
+              <p class="text-xs text-sand-500 mb-3">
+                Add <span class="font-mono text-sand-800">{professionalGithub}</span>
                 (the hired professional) as a collaborator on each repo below.
               </p>
             {:else}
@@ -909,21 +933,21 @@
             {/if}
 
             {#if loadingRepos}
-              <div class="animate-pulse h-10 bg-gray-100 rounded"></div>
+              <div class="animate-pulse h-10 bg-sand-100 rounded"></div>
             {:else if repoError}
               <p class="text-red-500 text-sm">{repoError}</p>
             {:else if companyRepos.length === 0}
-              <p class="text-sm text-gray-400">
+              <p class="text-sm text-sand-400">
                 No repos found. If your repos live in an organization, make sure you granted this
                 app access to that org when connecting (re-connect to re-show the org grant).
               </p>
             {:else}
-              <div class="divide-y divide-gray-100 border border-gray-100 rounded-lg">
+              <div class="divide-y divide-sand-100 border border-sand-100 rounded-lg">
                 {#each companyRepos as repo}
                   <div class="flex items-center justify-between py-2.5 px-3 gap-3">
                     <div class="min-w-0">
                       <span class="text-sm font-mono truncate">{repo.full_name}</span>
-                      {#if repo.private}<span class="text-xs text-gray-400 ml-2">private</span>{/if}
+                      {#if repo.private}<span class="text-xs text-sand-400 ml-2">private</span>{/if}
                       {#if !repo.can_admin}<span class="text-xs text-amber-600 ml-2">no admin</span>{/if}
                     </div>
                     <button class="btn-ghost text-xs shrink-0"
@@ -935,12 +959,12 @@
                   </div>
                 {/each}
               </div>
-              <p class="text-xs text-gray-400 mt-2">
+              <p class="text-xs text-sand-400 mt-2">
                 Opens the repo's GitHub access settings in a new tab. Add the professional there,
                 then come back — the agent can target the repo on a task. Repos marked
                 <span class="text-amber-600">no admin</span> can't be managed with your account.
               </p>
-              <p class="text-xs text-gray-400 mt-1">
+              <p class="text-xs text-sand-400 mt-1">
                 Missing an org's repos? <button type="button" class="text-brand-600 underline"
                   on:click={connectCompanyGithub}>Re-connect GitHub</button> and grant this app
                 access to that organization on the consent screen.
@@ -953,7 +977,7 @@
              work can actually be verified. Only consumed when the agent runs on the Sprite backend. -->
         <div class="card p-5">
           <h2 class="font-semibold mb-1">Work environment & access</h2>
-          <p class="text-sm text-gray-500 mb-4">
+          <p class="text-sm text-sand-500 mb-4">
             How the agent's machine is set up so it can do and verify the work — the same kinds of
             access you'd give a contractor. Used when this job's agent runs on a managed sprite.
           </p>
@@ -975,17 +999,17 @@
                 <label class="label text-xs" for="compose-file">Compose file (optional)</label>
                 <input class="input text-sm font-mono" id="compose-file" bind:value={composeFile}
                   placeholder="docker-compose.yml" />
-                <p class="text-xs text-gray-400 mt-1">Runs <span class="font-mono">docker compose up -d</span> after clone.</p>
+                <p class="text-xs text-sand-400 mt-1">Runs <span class="font-mono">docker compose up -d</span> after clone.</p>
               </div>
             {:else if testEnvStrategy === 'egress'}
               <div>
                 <label class="label text-xs" for="egress-urls">Allowed hosts</label>
                 <textarea class="input text-sm font-mono h-20" id="egress-urls" bind:value={egressUrls}
                   placeholder="api.example.com&#10;registry.npmjs.org"></textarea>
-                <p class="text-xs text-gray-400 mt-1">One host per line. The sprite can reach only these; everything else is blocked.</p>
+                <p class="text-xs text-sand-400 mt-1">One host per line. The sprite can reach only these; everything else is blocked.</p>
               </div>
             {:else if testEnvStrategy === 'cloud'}
-              <p class="text-xs text-gray-500 bg-blue-50 border border-blue-100 rounded-lg p-3">
+              <p class="text-xs text-sand-500 bg-blue-50 border border-blue-100 rounded-lg p-3">
                 Give the agent the scoped cloud credentials you'd issue a contractor (e.g. an IAM
                 user/role). Enter them below as <span class="font-mono">KEY=value</span> — they're
                 exported as environment on the sprite.
@@ -1035,7 +1059,7 @@
                 </label>
                 <textarea class="input text-sm font-mono h-24" id="env-vars" bind:value={envVars}
                   placeholder="AWS_ACCESS_KEY_ID=AKIA...&#10;AWS_SECRET_ACCESS_KEY=...&#10;AWS_REGION=us-east-1"></textarea>
-                <p class="text-xs text-gray-400 mt-1">
+                <p class="text-xs text-sand-400 mt-1">
                   <span class="font-mono">KEY=value</span> per line. Values whose names contain KEY/TOKEN/SECRET/PASSWORD/AUTHKEY
                   are encrypted; the rest are stored as plain config.
                 </p>
@@ -1047,7 +1071,7 @@
               <button class="btn-primary text-sm" disabled={savingTestEnv} on:click={saveTestEnv}>
                 {savingTestEnv ? 'Saving...' : testEnvGrant ? 'Update test environment' : 'Save test environment'}
               </button>
-              {#if testEnvGrant}<span class="text-xs text-gray-400">Active: {testEnvStrategy}</span>{/if}
+              {#if testEnvGrant}<span class="text-xs text-sand-400">Active: {testEnvStrategy}</span>{/if}
             </div>
           </div>
         </div>
@@ -1062,14 +1086,14 @@
     <!-- Contract tab -->
     {:else if activeTab === 'contract'}
       {#if loadingContract}
-        <div class="card p-8 animate-pulse"><div class="h-64 bg-gray-100 rounded"></div></div>
+        <div class="card p-8 animate-pulse"><div class="h-64 bg-sand-100 rounded"></div></div>
       {:else if contractMd}
         <div class="card p-6 prose prose-sm max-w-none">
           <!-- Simple markdown rendering: just display as pre for now -->
-          <pre class="whitespace-pre-wrap font-sans text-sm text-gray-700 leading-relaxed">{contractMd}</pre>
+          <pre class="whitespace-pre-wrap font-sans text-sm text-sand-700 leading-relaxed">{contractMd}</pre>
         </div>
       {:else}
-        <div class="card p-8 text-center text-gray-400 text-sm">
+        <div class="card p-8 text-center text-sand-400 text-sm">
           No contract generated yet.
           <button class="btn-secondary text-sm ml-3" on:click={() => api.post(`/jobs/${jobId}/contract`, {}).then(loadContract)}>
             Generate contract
@@ -1079,9 +1103,9 @@
 
     <!-- Audit log tab -->
     {:else if activeTab === 'audit'}
-      <div class="card divide-y divide-gray-100">
+      <div class="card divide-y divide-sand-100">
         {#if audit.length === 0}
-          <div class="p-8 text-center text-gray-400 text-sm">No audit events yet.</div>
+          <div class="p-8 text-center text-sand-400 text-sm">No audit events yet.</div>
         {:else}
           {#each audit as ev}
             <div class="px-5 py-3 flex items-start gap-3">
@@ -1089,14 +1113,14 @@
                 {ev.actor_type === 'agent' ? 'bg-purple-100 text-purple-700' :
                  ev.actor_type === 'professional' ? 'bg-blue-100 text-blue-700' :
                  ev.actor_type === 'company' ? 'bg-green-100 text-green-700' :
-                 'bg-gray-100 text-gray-600'}">
+                 'bg-sand-100 text-sand-600'}">
                 {ev.actor_type[0].toUpperCase()}
               </div>
               <div class="flex-1 min-w-0">
-                <div class="text-sm text-gray-700">{ev.summary}</div>
-                <div class="text-xs text-gray-400 mt-0.5">{timeAgo(ev.created_at)}</div>
+                <div class="text-sm text-sand-700">{ev.summary}</div>
+                <div class="text-xs text-sand-400 mt-0.5">{timeAgo(ev.created_at)}</div>
               </div>
-              <span class="text-xs text-gray-400 bg-gray-100 rounded px-2 py-0.5 font-mono shrink-0">{ev.event_type}</span>
+              <span class="text-xs text-sand-400 bg-sand-100 rounded px-2 py-0.5 font-mono shrink-0">{ev.event_type}</span>
             </div>
           {/each}
         {/if}
@@ -1105,19 +1129,19 @@
     <!-- Billing tab -->
     {:else if activeTab === 'billing'}
       <div class="card">
-        <div class="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+        <div class="px-5 py-4 border-b border-sand-100 flex items-center justify-between">
           <h2 class="font-semibold">Weekly invoices</h2>
           <button class="btn-secondary text-sm" on:click={() => api.post('/billing/generate', {}).then(loadBilling)}>
             Generate this week
           </button>
         </div>
         {#if loadingBilling}
-          <div class="p-8 animate-pulse"><div class="h-24 bg-gray-100 rounded"></div></div>
+          <div class="p-8 animate-pulse"><div class="h-24 bg-sand-100 rounded"></div></div>
         {:else if invoices.length === 0}
-          <div class="p-8 text-center text-gray-400 text-sm">No invoices yet.</div>
+          <div class="p-8 text-center text-sand-400 text-sm">No invoices yet.</div>
         {:else}
           <table class="w-full text-sm">
-            <thead class="bg-gray-50 text-xs text-gray-500 uppercase tracking-wide">
+            <thead class="bg-sand-50 text-xs text-sand-500 uppercase tracking-wide">
               <tr>
                 <th class="px-5 py-3 text-left">Week</th>
                 <th class="px-5 py-3 text-left">Tasks</th>
@@ -1127,13 +1151,13 @@
                 <th class="px-5 py-3 text-left">Status</th>
               </tr>
             </thead>
-            <tbody class="divide-y divide-gray-100">
+            <tbody class="divide-y divide-sand-100">
               {#each invoices as inv}
-                <tr class="hover:bg-gray-50">
-                  <td class="px-5 py-3 text-gray-700">{inv.week_start} – {inv.week_end}</td>
-                  <td class="px-5 py-3 text-gray-500">{inv.tasks_delivered}</td>
+                <tr class="hover:bg-sand-50">
+                  <td class="px-5 py-3 text-sand-700">{inv.week_start} – {inv.week_end}</td>
+                  <td class="px-5 py-3 text-sand-500">{inv.tasks_delivered}</td>
                   <td class="px-5 py-3 text-right font-medium">${(inv.gross_amount / 100).toFixed(2)}</td>
-                  <td class="px-5 py-3 text-right text-gray-400">${(inv.platform_fee / 100).toFixed(2)}</td>
+                  <td class="px-5 py-3 text-right text-sand-400">${(inv.platform_fee / 100).toFixed(2)}</td>
                   <td class="px-5 py-3 text-right text-green-700 font-medium">${(inv.net_payout / 100).toFixed(2)}</td>
                   <td class="px-5 py-3">
                     <span class="badge-{inv.status === 'paid' ? 'green' : inv.status === 'failed' ? 'red' : 'yellow'}">

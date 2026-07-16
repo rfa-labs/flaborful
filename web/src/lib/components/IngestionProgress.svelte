@@ -25,7 +25,7 @@
   $: runningRepo = repoList.find((r) => r.status === 'running')?.repo ?? null;
 
   const dot = (s: string) =>
-    s === 'done' ? 'bg-green-500' : s === 'failed' ? 'bg-red-500' : s === 'running' ? 'bg-amber-400 animate-pulse' : 'bg-gray-300';
+    s === 'done' ? 'bg-green-500' : s === 'failed' ? 'bg-red-500' : s === 'running' ? 'bg-amber-400 animate-pulse' : 'bg-sand-300';
 
   function apply(ev: Ev) {
     // Overall-complete sentinel (repo='').
@@ -97,13 +97,13 @@
 
 <div class="space-y-3">
   <div class="flex items-center justify-between">
-    <h3 class="text-sm font-semibold text-gray-700">
+    <h3 class="text-sm font-semibold text-sand-700">
       {#if complete}Knowledge vault built{:else}Building your knowledge vault…{/if}
     </h3>
     <div class="flex items-center gap-3">
-      <span class="text-xs text-gray-500">{totalNotes} note{totalNotes === 1 ? '' : 's'} written</span>
+      <span class="text-xs text-sand-500">{totalNotes} note{totalNotes === 1 ? '' : 's'} written</span>
       {#if !complete}
-        <button class="text-xs text-red-600 hover:underline disabled:text-gray-400" disabled={stopping} on:click={stop}>
+        <button class="text-xs text-red-600 hover:underline disabled:text-sand-400" disabled={stopping} on:click={stop}>
           {stopping ? 'Stopping…' : 'Stop ingestion'}
         </button>
       {/if}
@@ -111,7 +111,7 @@
   </div>
 
   {#if !complete}
-    <p class="text-xs text-gray-500">
+    <p class="text-xs text-sand-500">
       A coding agent is reading your repositories and documenting how you build software into a
       linked vault. This runs in the background — you can keep going, but training works best once
       it's done{runningRepo ? `, currently on ${runningRepo}` : ''}.
@@ -123,24 +123,24 @@
     {#each repoList as r (r.repo)}
       <li class="flex items-center gap-2 text-sm">
         <span class="w-2 h-2 rounded-full {dot(r.status)}"></span>
-        <span class="font-mono text-gray-700 truncate">{r.repo}</span>
-        <span class="text-xs text-gray-400 ml-auto">
+        <span class="font-mono text-sand-700 truncate">{r.repo}</span>
+        <span class="text-xs text-sand-400 ml-auto">
           {r.status === 'failed' ? 'failed' : `${r.notes_count} notes`}
         </span>
       </li>
     {:else}
-      <li class="text-xs text-gray-400">Waiting for the first repo to start…</li>
+      <li class="text-xs text-sand-400">Waiting for the first repo to start…</li>
     {/each}
   </ul>
 
   <!-- Live transcript -->
-  <div bind:this={logEl} class="bg-gray-900 text-gray-100 rounded p-2 text-[11px] font-mono h-40 overflow-y-auto leading-relaxed">
+  <div bind:this={logEl} class="bg-sand-900 text-sand-100 rounded p-2 text-[11px] font-mono h-40 overflow-y-auto leading-relaxed">
     {#each log as line}
-      <div class={line.kind === 'note' ? 'text-green-300' : 'text-gray-300'}>
-        <span class="text-gray-500">{line.repo ? `[${line.repo}] ` : ''}</span>{line.detail}
+      <div class={line.kind === 'note' ? 'text-green-300' : 'text-sand-300'}>
+        <span class="text-sand-500">{line.repo ? `[${line.repo}] ` : ''}</span>{line.detail}
       </div>
     {:else}
-      <div class="text-gray-500">…</div>
+      <div class="text-sand-500">…</div>
     {/each}
   </div>
 

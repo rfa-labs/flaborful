@@ -152,6 +152,7 @@ async fn ingest_github(
     let style_note = VaultNote {
         id: Uuid::new_v4(),
         agent_id: body.agent_id,
+        owner_kind: "agent".into(),
         slug: "style-guide".into(),
         title: format!("Style guide — {}", profile.username),
         body: style_text,
@@ -188,6 +189,7 @@ async fn ingest_github(
                     let note = VaultNote {
                         id: Uuid::new_v4(),
                         agent_id,
+                        owner_kind: "agent".into(),
                         slug: format!("aspect-{}", aspect_slug),
                         title: format!("Aspect: {}", aspect_slug.replace('_', " ")),
                         body: aspect_text,
@@ -228,9 +230,8 @@ async fn ingest_github(
     crate::services::onboarding::ingest::spawn_ingestion(
         state.db.clone(),
         state.backends.clone(),
-        body.agent_id,
-        persona_prompt.clone(),
-        cf_finetune_id,
+        crate::services::vault::VaultOwner::Agent(body.agent_id),
+        Some((persona_prompt.clone(), cf_finetune_id)),
         Some(token),
         repos,
         body.force,
@@ -273,7 +274,7 @@ async fn ingestion_status(
     let rows = sqlx::query!(
         r#"SELECT DISTINCT ON (repo) repo, status, detail, notes_count
            FROM ingestion_events
-           WHERE agent_id = $1 AND kind = 'status' AND repo <> ''
+           WHERE owner_kind = 'agent' AND agent_id = $1 AND kind = 'status' AND repo <> ''
            ORDER BY repo, created_at DESC"#,
         agent_id,
     )
@@ -293,7 +294,7 @@ async fn ingestion_status(
 
     let complete = sqlx::query_scalar!(
         "SELECT EXISTS(SELECT 1 FROM ingestion_events
-                       WHERE agent_id = $1 AND kind = 'status' AND status = 'complete')",
+                       WHERE owner_kind = 'agent' AND agent_id = $1 AND kind = 'status' AND status = 'complete')",
         agent_id,
     )
     .fetch_one(&state.db)
@@ -304,7 +305,7 @@ async fn ingestion_status(
     // Authoritative note total: count the actual vault notes sourced from ingestion, not the
     // event tally (which can double-count on agent retries).
     let total_notes = sqlx::query_scalar!(
-        "SELECT COUNT(*) FROM vault_notes WHERE agent_id = $1 AND repo IS NOT NULL",
+        "SELECT COUNT(*) FROM vault_notes WHERE owner_kind = 'agent' AND agent_id = $1 AND repo IS NOT NULL",
         agent_id,
     )
     .fetch_one(&state.db)
@@ -338,8 +339,8 @@ async fn cancel_ingestion(
 
     // 3. Mark the run complete in the feed so the UI unblocks and lets you continue.
     let _ = sqlx::query!(
-        "INSERT INTO ingestion_events (agent_id, repo, kind, status, detail)
-         VALUES ($1, '', 'status', 'complete', 'Ingestion stopped by request')",
+        "INSERT INTO ingestion_events (owner_kind, agent_id, repo, kind, status, detail)
+         VALUES ('agent', $1, '', 'status', 'complete', 'Ingestion stopped by request')",
         agent_id,
     )
     .execute(&state.db)
@@ -447,6 +448,7 @@ async fn submit_open_interview(
         let note = VaultNote {
             id: Uuid::new_v4(),
             agent_id: body.agent_id,
+            owner_kind: "agent".into(),
             slug: format!("style-{}", a.question_id.simple()),
             title: a.prompt.chars().take(80).collect(),
             body: format!("Q: {}\nA: {}", a.prompt, a.answer),
@@ -534,6 +536,7 @@ async fn submit_interview(
         let note = VaultNote {
             id: Uuid::new_v4(),
             agent_id: body.agent_id,
+            owner_kind: "agent".into(),
             slug: format!("interview-pref-{}", Uuid::new_v4().simple()),
             title: p.scenario.chars().take(80).collect(),
             body: body_text,

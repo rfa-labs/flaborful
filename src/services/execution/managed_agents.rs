@@ -279,8 +279,15 @@ impl ManagedAgentsBackend {
                  professional whose voice is described above. Implement the requested task: read \
                  the codebase, make the changes, run the project's tests, and iterate until they \
                  pass. Use the vault tools (search_vault / read_note / follow_links) to ground your \
-                 work in their past patterns, and upsert_note to record durable decisions. When \
-                 finished, output a concise summary of what you changed."
+                 work in their past patterns — this spans both YOUR vault and the company repo \
+                 vault attached to this task. When finished, capture knowledge on BOTH sides like a \
+                 human contractor would: call `record_technical` to write the concrete change into \
+                 the COMPANY's vault (files/symbols, decisions in their codebase — proprietary \
+                 detail is fine), and `record_experience` to write the transferable lesson into \
+                 YOUR OWN vault (architecture/patterns you used and learned — NO company name, \
+                 secrets, or proprietary identifiers). search_vault first and set `related` so each \
+                 note connects into the existing graph. Then output a concise summary of what you \
+                 changed."
             }
             super::TaskKind::Ingest => {
                 "You are documenting a codebase into the professional's knowledge vault on their \
@@ -552,25 +559,31 @@ impl ManagedAgentsBackend {
                         // passes. This makes vault_notes.repo authoritative so the resume check
                         // ("skip repos already documented") is reliable rather than trusting the
                         // agent to tag each note correctly.
-                        if name == "upsert_note" {
+                        if matches!(name, "upsert_note" | "record_experience" | "record_technical")
+                        {
                             if let (Some(obj), Some(repo)) = (args.as_object_mut(), &brief.repo) {
                                 obj.insert("repo".into(), json!(repo));
                             }
                         }
-                        let result =
-                            match super::taste::resolve_agent(&self.db, &brief.taste_token).await {
-                                Ok(agent_id) => crate::services::vault::handle_tool(
-                                    &self.db,
-                                    &self.qdrant,
-                                    &self.inference,
-                                    agent_id,
-                                    name,
-                                    &args,
-                                )
-                                .await
-                                .unwrap_or_else(|e| format!("(vault error: {})", e)),
-                                Err(e) => format!("(vault auth failed: {})", e),
-                            };
+                        let result = match super::taste::resolve_vault_scope(
+                            &self.db,
+                            &brief.taste_token,
+                        )
+                        .await
+                        {
+                            Ok((owner, overlays)) => crate::services::vault::handle_tool(
+                                &self.db,
+                                &self.qdrant,
+                                &self.inference,
+                                owner,
+                                &overlays,
+                                name,
+                                &args,
+                            )
+                            .await
+                            .unwrap_or_else(|e| format!("(vault error: {})", e)),
+                            Err(e) => format!("(vault auth failed: {})", e),
+                        };
                         sink.push(&format!(
                             "[{}] → {}",
                             name,
@@ -742,6 +755,32 @@ fn vault_tool_specs() -> Vec<Value> {
             "type": "custom", "name": "follow_links",
             "description": "Return the notes a note links to via its 'related' slugs.",
             "input_schema": { "type": "object", "properties": { "slug": { "type": "string" } }, "required": ["slug"] }
+        }),
+        json!({
+            "type": "custom", "name": "record_experience",
+            "description": "Record an EXPERIENCE note in YOUR OWN vault (the professional's) — the transferable lesson from this work: what you built, the architecture/patterns you used, decisions you made, what worked. This is YOURS to carry to future jobs, like a contractor describing past work in an interview. MUST NOT contain the company's name, secrets, proprietary identifiers, or copied proprietary code. layer ∈ architecture|pattern|note. Link related notes via 'related'. search_vault first to connect it into your graph.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "slug": { "type": "string" }, "title": { "type": "string" },
+                    "body": { "type": "string" }, "layer": { "type": "string" },
+                    "related": { "type": "array", "items": { "type": "string" } }
+                },
+                "required": ["slug", "body"]
+            }
+        }),
+        json!({
+            "type": "custom", "name": "record_technical",
+            "description": "Record a TECHNICAL note in the COMPANY's vault — the concrete work product in the context of their codebase (files/symbols touched, the change, decisions). Proprietary detail is expected and fine here; this stays with the company who owns the work. layer ∈ feature|architecture|pattern|tech|note. Link related notes via 'related'. search_vault first to connect it to existing company notes.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "slug": { "type": "string" }, "title": { "type": "string" },
+                    "body": { "type": "string" }, "layer": { "type": "string" },
+                    "related": { "type": "array", "items": { "type": "string" } }
+                },
+                "required": ["slug", "body"]
+            }
         }),
     ]
 }
