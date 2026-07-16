@@ -44,24 +44,24 @@
   {#if error}
     <div class="card p-6 text-red-600 text-sm bg-red-50 rounded-lg">{error}</div>
   {:else if loading}
-    <div class="card p-8 animate-pulse"><div class="h-32 bg-gray-100 rounded"></div></div>
+    <div class="card p-8 animate-pulse"><div class="h-32 bg-sand-100 rounded"></div></div>
   {:else if jobs.length === 0}
-    <div class="card p-8 text-center text-gray-400 text-sm">
+    <div class="card p-8 text-center text-sand-400 text-sm">
       Your agent hasn't been hired onto any jobs yet. Browse the
       <button class="text-brand-600 hover:underline" on:click={() => goto('/studio/jobs/board')}>job board</button>
       to apply.
     </div>
   {:else}
     <div class="card">
-      <ul class="divide-y divide-gray-100">
+      <ul class="divide-y divide-sand-200">
         {#each jobs as job}
-          <li class="px-5 py-4 flex items-center gap-4 hover:bg-gray-50 transition-colors cursor-pointer"
+          <li class="px-5 py-4 flex items-center gap-4 hover:bg-sand-100 transition-colors cursor-pointer"
             on:click={() => goto(`/studio/executions`)}
             on:keydown={(e) => e.key === 'Enter' && goto(`/studio/executions`)}
             role="button" tabindex="0">
             <div class="flex-1 min-w-0">
               <div class="font-medium text-sm truncate">{job.title}</div>
-              <div class="text-xs text-gray-400 mt-0.5">
+              <div class="text-xs text-sand-400 mt-0.5">
                 ${(job.hourly_rate / 100).toFixed(0)}/hr · hired {new Date(job.created_at).toLocaleDateString()}
               </div>
             </div>

@@ -21,23 +21,27 @@
 
 <div class="min-h-screen flex flex-col">
   <!-- Top nav -->
-  <header class="bg-white border-b border-gray-200 sticky top-0 z-40">
+  <header class="bg-white/85 backdrop-blur border-b border-sand-200 sticky top-0 z-40">
     <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-14 flex items-center justify-between gap-4">
-      <!-- Wordmark -->
-      <a href="/" class="text-lg font-bold text-brand-600 tracking-tight shrink-0">
+      <!-- Wordmark: the gradient treatment, permanent (the landing page no longer needs to
+           override the nav — the base nav already matches). -->
+      <a href="/" class="font-display text-xl font-extrabold tracking-tight shrink-0 text-transparent bg-clip-text"
+         style="background-image:linear-gradient(105deg,#7c4dff,#e0457b 60%,#f0863a)">
         flaborful
       </a>
 
-      <!-- Portal toggle (guests only) -->
+      <!-- Portal toggle (guests only). Hidden on phones, like the nav below it: at 390px the
+           toggle + "Sign in" + "Get started" total 399px, which pushed "Get started" off the
+           right edge on every page for logged-out mobile visitors. -->
       {#if !$isLoggedIn}
-        <div class="flex items-center bg-gray-100 rounded-lg p-0.5 text-sm font-medium gap-0.5">
+        <div class="hidden sm:flex items-center bg-sand-100 rounded-lg p-0.5 text-sm font-medium gap-0.5">
           <button
-            class="px-3 py-1.5 rounded-md transition-colors {$session.portal === 'professional' ? 'bg-white shadow text-gray-900' : 'text-gray-500 hover:text-gray-700'}"
+            class="px-3 py-1.5 rounded-md transition-colors {$session.portal === 'professional' ? 'bg-white shadow-sm text-sand-900' : 'text-sand-500 hover:text-sand-700'}"
             on:click={() => switchPortal('professional')}>
             Agent Studio
           </button>
           <button
-            class="px-3 py-1.5 rounded-md transition-colors {$session.portal === 'company' ? 'bg-white shadow text-gray-900' : 'text-gray-500 hover:text-gray-700'}"
+            class="px-3 py-1.5 rounded-md transition-colors {$session.portal === 'company' ? 'bg-white shadow-sm text-sand-900' : 'text-sand-500 hover:text-sand-700'}"
             on:click={() => switchPortal('company')}>
             Hire Desk
           </button>
@@ -47,29 +51,29 @@
       <!-- Nav links -->
       <nav class="hidden md:flex items-center gap-1 text-sm">
         <a href="/marketplace"
-           class="px-3 py-1.5 rounded-md transition-colors {isMkt ? 'bg-brand-50 text-brand-700 font-medium' : 'text-gray-600 hover:bg-gray-100'}">
+           class="px-3 py-1.5 rounded-md transition-colors {isMkt ? 'bg-brand-50 text-brand-700 font-medium' : 'text-sand-600 hover:bg-sand-100'}">
           Marketplace
         </a>
         {#if $isLoggedIn}
           {#if $session.role === 'company'}
             <a href="/hire"
-               class="px-3 py-1.5 rounded-md transition-colors {isHire ? 'bg-brand-50 text-brand-700 font-medium' : 'text-gray-600 hover:bg-gray-100'}">
+               class="px-3 py-1.5 rounded-md transition-colors {isHire ? 'bg-brand-50 text-brand-700 font-medium' : 'text-sand-600 hover:bg-sand-100'}">
               Hire Desk
             </a>
           {:else}
             <a href="/studio"
-               class="px-3 py-1.5 rounded-md transition-colors {isStudio ? 'bg-brand-50 text-brand-700 font-medium' : 'text-gray-600 hover:bg-gray-100'}">
+               class="px-3 py-1.5 rounded-md transition-colors {isStudio ? 'bg-brand-50 text-brand-700 font-medium' : 'text-sand-600 hover:bg-sand-100'}">
               My Studio
             </a>
           {/if}
         {:else if $session.portal === 'professional'}
           <a href="/studio"
-             class="px-3 py-1.5 rounded-md transition-colors {isStudio ? 'bg-brand-50 text-brand-700 font-medium' : 'text-gray-600 hover:bg-gray-100'}">
+             class="px-3 py-1.5 rounded-md transition-colors {isStudio ? 'bg-brand-50 text-brand-700 font-medium' : 'text-sand-600 hover:bg-sand-100'}">
             My Studio
           </a>
         {:else}
           <a href="/hire"
-             class="px-3 py-1.5 rounded-md transition-colors {isHire ? 'bg-brand-50 text-brand-700 font-medium' : 'text-gray-600 hover:bg-gray-100'}">
+             class="px-3 py-1.5 rounded-md transition-colors {isHire ? 'bg-brand-50 text-brand-700 font-medium' : 'text-sand-600 hover:bg-sand-100'}">
             Hire Desk
           </a>
         {/if}
@@ -77,7 +81,7 @@
 
       <div class="flex items-center gap-2">
         {#if $isLoggedIn}
-          <span class="text-xs text-gray-500 capitalize">{$session.role}</span>
+          <span class="text-xs text-sand-500 capitalize">{$session.role}</span>
           <button on:click={signOut} class="btn-secondary text-xs">Sign out</button>
         {:else}
           <a href="/auth/login" class="btn-secondary text-xs">Sign in</a>

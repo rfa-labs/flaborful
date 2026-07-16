@@ -105,7 +105,7 @@
   }
 
   function confidenceBg(score: number | null) {
-    if (score == null) return 'bg-gray-100 text-gray-600';
+    if (score == null) return 'bg-sand-100 text-sand-600';
     if (score >= 0.9) return 'bg-green-100 text-green-800';
     if (score >= 0.7) return 'bg-yellow-100 text-yellow-800';
     return 'bg-red-100 text-red-800';
@@ -121,7 +121,7 @@
   </div>
 
   {#if loading}
-    <div class="card p-8 animate-pulse"><div class="h-48 bg-gray-100 rounded"></div></div>
+    <div class="card p-8 animate-pulse"><div class="h-48 bg-sand-100 rounded"></div></div>
   {:else if error}
     <div class="card p-8 text-center text-red-600">{error}</div>
   {:else if task}
@@ -130,14 +130,14 @@
       <div class="lg:col-span-2 space-y-4">
         <!-- Task input -->
         <div class="card p-5">
-          <h2 class="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-3">Task input</h2>
-          <pre class="text-sm text-gray-700 whitespace-pre-wrap bg-gray-50 rounded-lg p-4 font-mono">{JSON.stringify(task.input, null, 2)}</pre>
+          <h2 class="text-sm font-semibold text-sand-500 uppercase tracking-wide mb-3">Task input</h2>
+          <pre class="text-sm text-sand-700 whitespace-pre-wrap bg-sand-50 rounded-lg p-4 font-mono">{JSON.stringify(task.input, null, 2)}</pre>
         </div>
 
         <!-- Agent's draft -->
         <div class="card p-5">
           <div class="flex items-center justify-between mb-3">
-            <h2 class="text-sm font-semibold text-gray-500 uppercase tracking-wide">
+            <h2 class="text-sm font-semibold text-sand-500 uppercase tracking-wide">
               Agent output {#if amended}<span class="badge-yellow ml-2">edited</span>{/if}
             </h2>
             {#if task.confidence_score != null}
@@ -147,7 +147,7 @@
             {/if}
           </div>
           <textarea
-            class="w-full min-h-[300px] font-mono text-sm border border-gray-200 rounded-lg p-4 focus:outline-none focus:ring-2 focus:ring-brand-500 resize-y"
+            class="w-full min-h-[300px] font-mono text-sm border border-sand-200 rounded-lg p-4 focus:outline-none focus:ring-2 focus:ring-brand-500 resize-y"
             bind:value={editedOutput}
             placeholder="Agent output will appear here..."
           ></textarea>
@@ -200,19 +200,19 @@
       <!-- Sidebar -->
       <div class="space-y-4">
         <div class="card p-4">
-          <h3 class="text-sm font-semibold text-gray-700 mb-3">Task details</h3>
+          <h3 class="text-sm font-semibold text-sand-700 mb-3">Task details</h3>
           <dl class="space-y-2 text-sm">
             <div class="flex justify-between">
-              <dt class="text-gray-500">Status</dt>
+              <dt class="text-sand-500">Status</dt>
               <dd class="font-medium capitalize">{task.status.replace('_', ' ')}</dd>
             </div>
             <div class="flex justify-between">
-              <dt class="text-gray-500">Created</dt>
+              <dt class="text-sand-500">Created</dt>
               <dd class="font-medium">{new Date(task.created_at).toLocaleDateString()}</dd>
             </div>
             {#if task.confidence_score != null}
               <div class="flex justify-between">
-                <dt class="text-gray-500">Confidence</dt>
+                <dt class="text-sand-500">Confidence</dt>
                 <dd class="font-medium">{Math.round(task.confidence_score * 100)}%</dd>
               </div>
             {/if}
@@ -220,8 +220,8 @@
         </div>
 
         <div class="card p-4">
-          <h3 class="text-sm font-semibold text-gray-700 mb-2">About approvals</h3>
-          <p class="text-xs text-gray-500 leading-relaxed">
+          <h3 class="text-sm font-semibold text-sand-700 mb-2">About approvals</h3>
+          <p class="text-xs text-sand-500 leading-relaxed">
             Every approval teaches your agent. Edits you make are recorded as preference pairs
             and fed back into the LoRA training cycle — the agent gets better with each correction.
           </p>

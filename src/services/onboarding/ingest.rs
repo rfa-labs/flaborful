@@ -22,6 +22,7 @@ use uuid::Uuid;
 use crate::services::execution::{
     ExecutionBackendKind, ExecutionBackends, TaskBrief, TranscriptSink,
 };
+use crate::services::vault::VaultOwner;
 
 /// Agents whose ingestion loop has been asked to stop. The background loop checks this before
 /// starting each repo and bails if its agent is listed, so an in-flight run finishes the current
@@ -60,16 +61,19 @@ fn is_cancelled(agent_id: Uuid) -> bool {
 /// One sink per repo; it keeps a running note counter and classifies each pushed line.
 struct IngestionSink {
     db: PgPool,
-    agent_id: Uuid,
+    /// Vault owner id (agent id or company id) — stored in the `agent_id` column.
+    owner_id: Uuid,
+    owner_kind: &'static str,
     repo: String,
     notes: AtomicI32,
 }
 
 impl IngestionSink {
-    fn new(db: PgPool, agent_id: Uuid, repo: String) -> Self {
+    fn new(db: PgPool, owner: VaultOwner, repo: String) -> Self {
         Self {
             db,
-            agent_id,
+            owner_id: owner.id(),
+            owner_kind: owner.kind_str(),
             repo,
             notes: AtomicI32::new(0),
         }
@@ -82,9 +86,10 @@ impl IngestionSink {
 
     async fn record(&self, kind: &str, status: Option<&str>, detail: &str, notes: i32) {
         if let Err(e) = sqlx::query!(
-            "INSERT INTO ingestion_events (agent_id, repo, kind, status, detail, notes_count)
-             VALUES ($1, $2, $3, $4, $5, $6)",
-            self.agent_id,
+            "INSERT INTO ingestion_events (owner_kind, agent_id, repo, kind, status, detail, notes_count)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)",
+            self.owner_kind,
+            self.owner_id,
             self.repo,
             kind,
             status,
@@ -114,8 +119,9 @@ impl IngestionSink {
     /// The authoritative count of notes in the vault for THIS repo (distinct rows, not events).
     async fn vault_note_count(&self) -> i32 {
         sqlx::query_scalar!(
-            "SELECT COUNT(*) FROM vault_notes WHERE agent_id = $1 AND repo = $2",
-            self.agent_id,
+            "SELECT COUNT(*) FROM vault_notes WHERE owner_kind = $1 AND agent_id = $2 AND repo = $3",
+            self.owner_kind,
+            self.owner_id,
             self.repo,
         )
         .fetch_one(&self.db)
@@ -150,9 +156,10 @@ impl TranscriptSink for IngestionSink {
 pub fn spawn_ingestion(
     db: PgPool,
     backends: ExecutionBackends,
-    agent_id: Uuid,
-    persona_prompt: String,
-    cf_finetune_id: Option<String>,
+    owner: VaultOwner,
+    // The principal's persona + LoRA, for agent vaults (gives ingestion the professional's voice
+    // + consult_principal). None for company vaults — a company has no principal to consult.
+    principal: Option<(String, Option<String>)>,
     github_token: Option<String>,
     repos: Vec<(String, String)>,
     // When false (default), repos that already have vault notes are skipped (resume). When true,
@@ -160,23 +167,29 @@ pub fn spawn_ingestion(
     force: bool,
 ) {
     tokio::spawn(async move {
-        // Fresh start: clear any prior run's progress events for this agent so the live feed and
+        let owner_id = owner.id();
+        let owner_kind = owner.kind_str();
+        // Fresh start: clear any prior run's progress events for this owner so the live feed and
         // the `complete` snapshot reflect THIS run, not a stale previous attempt (otherwise the UI
         // sees the old `complete` sentinel and refuses to show progress).
-        if let Err(e) = sqlx::query!("DELETE FROM ingestion_events WHERE agent_id = $1", agent_id)
-            .execute(&db)
-            .await
+        if let Err(e) = sqlx::query!(
+            "DELETE FROM ingestion_events WHERE owner_kind = $1 AND agent_id = $2",
+            owner_kind,
+            owner_id
+        )
+        .execute(&db)
+        .await
         {
-            tracing::warn!("failed to clear prior ingestion_events for {agent_id}: {e:?}");
+            tracing::warn!("failed to clear prior ingestion_events for {owner_id}: {e:?}");
         }
 
         let total = repos.len();
         for (repo, branch) in repos {
             // Cancellation: if a stop was requested, finish here. Any repo already documented in
             // this run keeps its notes; we just don't start the next one.
-            if is_cancelled(agent_id) {
-                tracing::info!("ingestion cancelled for {agent_id} — stopping before {repo}");
-                let sink = IngestionSink::new(db.clone(), agent_id, repo.clone());
+            if is_cancelled(owner_id) {
+                tracing::info!("ingestion cancelled for {owner_id} — stopping before {repo}");
+                let sink = IngestionSink::new(db.clone(), owner, repo.clone());
                 sink.status("failed", &format!("Cancelled before {repo} (stopped by request)"))
                     .await;
                 break;
@@ -186,8 +199,9 @@ pub fn spawn_ingestion(
             // survives restarts — not the event log, which we clear each run.
             if !force {
                 let already = sqlx::query_scalar!(
-                    "SELECT COUNT(*) FROM vault_notes WHERE agent_id = $1 AND repo = $2",
-                    agent_id,
+                    "SELECT COUNT(*) FROM vault_notes WHERE owner_kind = $1 AND agent_id = $2 AND repo = $3",
+                    owner_kind,
+                    owner_id,
                     repo,
                 )
                 .fetch_one(&db)
@@ -196,7 +210,7 @@ pub fn spawn_ingestion(
                 .unwrap_or(0);
                 if already > 0 {
                     tracing::info!("skipping {repo} — already has {already} notes");
-                    let sink = IngestionSink::new(db.clone(), agent_id, repo.clone());
+                    let sink = IngestionSink::new(db.clone(), owner, repo.clone());
                     sink.status(
                         "done",
                         &format!("Skipped {repo} — already documented ({already} notes)"),
@@ -209,9 +223,8 @@ pub fn spawn_ingestion(
             if let Err(e) = ingest_repo(
                 &db,
                 &backends,
-                agent_id,
-                &persona_prompt,
-                cf_finetune_id.as_deref(),
+                owner,
+                principal.as_ref(),
                 github_token.clone(),
                 &repo,
                 &branch,
@@ -219,22 +232,23 @@ pub fn spawn_ingestion(
             .await
             {
                 tracing::warn!(
-                    "vault ingestion failed for {} (agent {}): {:?}",
+                    "vault ingestion failed for {} (owner {}): {:?}",
                     repo,
-                    agent_id,
+                    owner_id,
                     e
                 );
             }
         }
-        // Clear any cancel flag so a future re-run for this agent isn't pre-cancelled.
-        take_cancel(agent_id);
-        tracing::info!("vault ingestion complete for agent {}", agent_id);
+        // Clear any cancel flag so a future re-run for this owner isn't pre-cancelled.
+        take_cancel(owner_id);
+        tracing::info!("vault ingestion complete for owner {}", owner_id);
         // Overall completion marker (repo="" sentinel) so the UI can stop the live feed and tell
-        // the professional it's safe to proceed to the interview / training step.
+        // the owner it's safe to proceed.
         let _ = sqlx::query!(
-            "INSERT INTO ingestion_events (agent_id, repo, kind, status, detail)
-             VALUES ($1, '', 'status', 'complete', $2)",
-            agent_id,
+            "INSERT INTO ingestion_events (owner_kind, agent_id, repo, kind, status, detail)
+             VALUES ($1, $2, '', 'status', 'complete', $3)",
+            owner_kind,
+            owner_id,
             format!("Ingestion complete — documented {total} repos"),
         )
         .execute(&db)
@@ -242,25 +256,41 @@ pub fn spawn_ingestion(
     });
 }
 
-/// Document one repo into the agent's vault. Runs the Managed-Agents backend with a
-/// documentation brief; the agent writes notes via the vault tools. Best-effort.
+/// Document one repo into the owner's vault. Runs the Managed-Agents backend with a documentation
+/// brief; the agent writes notes via the vault tools. Best-effort. `principal` is the persona +
+/// LoRA for agent vaults (None for company vaults — there's no principal to consult).
 async fn ingest_repo(
     db: &PgPool,
     backends: &ExecutionBackends,
-    agent_id: Uuid,
-    persona_prompt: &str,
-    cf_finetune_id: Option<&str>,
+    owner: VaultOwner,
+    principal: Option<&(String, Option<String>)>,
     github_token: Option<String>,
     repo: &str,
     base_branch: &str,
 ) -> Result<()> {
-    let token = crate::services::execution::taste::mint_agent_token(
-        db,
-        agent_id,
-        persona_prompt,
-        cf_finetune_id,
-    )
-    .await?;
+    // Mint the per-run vault token. Agent vaults get a persona/LoRA-bound token (so the agent
+    // documents in the professional's voice and can consult_principal); company vaults get a
+    // company-scoped token with no principal.
+    let (token, persona_prompt, cf_finetune_id) = match owner {
+        VaultOwner::Agent(agent_id) => {
+            let (persona, cf) = principal
+                .cloned()
+                .unwrap_or_else(|| (String::new(), None));
+            let token = crate::services::execution::taste::mint_agent_token(
+                db,
+                agent_id,
+                &persona,
+                cf.as_deref(),
+            )
+            .await?;
+            (token, persona, cf)
+        }
+        VaultOwner::Company(company_id) => {
+            let token =
+                crate::services::execution::taste::mint_company_token(db, company_id).await?;
+            (token, String::new(), None)
+        }
+    };
 
     let api_base_url =
         std::env::var("API_BASE_URL").unwrap_or_else(|_| "http://localhost:8080".into());
@@ -268,16 +298,19 @@ async fn ingest_repo(
     // uuid only used to name the agent/branch (no tasks row exists).
     let brief = TaskBrief {
         task_id: Uuid::new_v4(),
-        agent_id,
+        agent_id: owner.id(),
         job_id: Uuid::nil(),
         kind: crate::services::execution::TaskKind::Ingest,
         repo: Some(repo.to_string()),
         base_branch: base_branch.to_string(),
         branch: "flaborful/ingest".to_string(),
-        task_text: documentation_brief(repo),
+        task_text: match owner {
+            VaultOwner::Agent(_) => documentation_brief(repo),
+            VaultOwner::Company(_) => company_documentation_brief(repo),
+        },
         instructions: None,
-        persona_prompt: persona_prompt.to_string(),
-        cf_finetune_id: cf_finetune_id.map(str::to_string),
+        persona_prompt,
+        cf_finetune_id,
         github_token,
         taste_token: token.clone(),
         api_base_url,
@@ -286,7 +319,7 @@ async fn ingest_repo(
     // Managed Agents is the default ingestion backend (least setup; the vault tools are
     // registered as native custom tools). The sink streams the agent's transcript into
     // ingestion_events for the live onboarding feed.
-    let sink = IngestionSink::new(db.clone(), agent_id, repo.to_string());
+    let sink = IngestionSink::new(db.clone(), owner, repo.to_string());
     sink.status(
         "running",
         &format!("Documenting {repo} (branch {base_branch})"),
@@ -353,6 +386,49 @@ fn documentation_brief(repo: &str) -> String {
          the notes you created (slug e.g. `moc-{slug}`).\n\
          5. Use `list_vault` / `search_vault` first to avoid duplicating notes that already exist, and \
          to link new notes to related existing ones across the professional's other repos.\n\n\
+         Keep notes concise and specific — describe and point at code (file + symbol), don't paste \
+         whole files. When done, briefly summarize which notes you created.",
+        repo = repo,
+        slug = repo.rsplit('/').next().unwrap_or(repo).to_lowercase().replace([' ', '_'], "-"),
+    )
+}
+
+/// The brief for documenting a COMPANY repo into the company's knowledge vault. Same structured,
+/// linked, MOC'd output as the professional brief, but framed as the company's own codebase
+/// knowledge graph — proprietary architecture and implementation detail are welcome here (these
+/// are the seed *technical* notes, which may hold proprietary detail).
+fn company_documentation_brief(repo: &str) -> String {
+    format!(
+        "# Goal\n\
+         Document the company codebase `{repo}` into the company knowledge vault — a durable, \
+         linked knowledge graph of how this system is built, the way a careful staff engineer \
+         would write it up in Obsidian for the team. This is the company's OWN private knowledge \
+         base, so capturing proprietary architecture, internal services, and implementation detail \
+         is expected and welcome. Do NOT change any code, commit, or push.\n\n\
+         # Where the code is\n\
+         The repository is already checked out for you at `/workspace/repo`. Start by running \
+         `ls -la /workspace/repo` and exploring from there.\n\
+         CRITICAL — if `/workspace/repo` contains only `.git` (no working files), the platform's \
+         checkout FAILED. You must STOP immediately: reply with exactly `INGEST_ABORT: checkout \
+         failed` and end your turn. Do NOT run any network/git command to try to recover — those \
+         will hang and waste the session. Recovery is the platform's job, not yours.\n\n\
+         # How\n\
+         1. Explore the repo at `/workspace/repo`: read the source (not just the README) to \
+         understand its architecture, major features/subsystems, the patterns it uses, the tech \
+         stack, and any proprietary/internal specifics a new contractor would need to know.\n\
+         2. For each meaningful piece, call `upsert_note` to write a vault note:\n\
+         - **feature** notes — one per major feature/subsystem: what it does and how it's built, \
+         pointing at the key files/functions.\n\
+         - **pattern** notes — recurring idioms/abstractions in this codebase, linked across the \
+         features that use them.\n\
+         - **tech** notes — per technology/framework/infra, linking the features that use it.\n\
+         - **golden_snippet** notes — a few exemplary blocks that capture how this team writes code.\n\
+         3. Use `related` (slugs) to wire notes into a graph — link features to the patterns and \
+         tech they use. Set `domain` (backend/frontend/infra/testing/product/general) and `repo`.\n\
+         4. Write one **feature** note as a Map of Content for the repo, linking the notes you \
+         created (slug e.g. `moc-{slug}`).\n\
+         5. Use `list_vault` / `search_vault` first to avoid duplicates and to link new notes to \
+         existing ones across the company's other repos.\n\n\
          Keep notes concise and specific — describe and point at code (file + symbol), don't paste \
          whole files. When done, briefly summarize which notes you created.",
         repo = repo,

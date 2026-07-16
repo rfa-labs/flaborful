@@ -42,22 +42,22 @@
     add: 'bg-green-50 text-green-800',
     del: 'bg-red-50 text-red-800',
     hunk: 'bg-blue-50 text-blue-600',
-    file: 'text-gray-400',
-    meta: 'text-gray-400',
-    ctx: 'text-gray-700',
+    file: 'text-sand-400',
+    meta: 'text-sand-400',
+    ctx: 'text-sand-700',
   };
 </script>
 
 {#if !diff?.trim()}
-  <p class="text-xs text-gray-400">No changes.</p>
+  <p class="text-xs text-sand-400">No changes.</p>
 {:else}
   <div class="space-y-2">
     {#each blocks as block, i (i)}
-      <div class="rounded border border-gray-200 overflow-hidden">
-        <button class="w-full flex items-center justify-between px-2 py-1 bg-gray-100 text-left"
+      <div class="rounded border border-sand-200 overflow-hidden">
+        <button class="w-full flex items-center justify-between px-2 py-1 bg-sand-100 text-left"
           on:click={() => collapsed = { ...collapsed, [i]: !collapsed[i] }}>
-          <span class="text-xs font-mono font-semibold text-gray-700 truncate">{block.header}</span>
-          <span class="text-[10px] text-gray-400">
+          <span class="text-xs font-mono font-semibold text-sand-700 truncate">{block.header}</span>
+          <span class="text-[10px] text-sand-400">
             <span class="text-green-600">+{block.lines.filter((l) => l.kind === 'add').length}</span>
             <span class="text-red-600 ml-1">−{block.lines.filter((l) => l.kind === 'del').length}</span>
             <span class="ml-2">{collapsed[i] ? '▸' : '▾'}</span>

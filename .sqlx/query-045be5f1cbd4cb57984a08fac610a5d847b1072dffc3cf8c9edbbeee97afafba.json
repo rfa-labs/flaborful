@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO ingestion_events (owner_kind, agent_id, repo, kind, status, detail)\n             VALUES ($1, $2, '', 'status', 'complete', $3)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "045be5f1cbd4cb57984a08fac610a5d847b1072dffc3cf8c9edbbeee97afafba"
+}

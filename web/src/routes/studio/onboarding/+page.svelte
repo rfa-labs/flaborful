@@ -217,32 +217,32 @@
   {#if hasExistingAgent}
     <div class="card p-8">
       <h1 class="text-2xl font-bold mb-1">Enrich your agent</h1>
-      <p class="text-gray-500 mb-8">
+      <p class="text-sand-500 mb-8">
         Your agent is already set up. Improve any part independently — none of these interfere with
         the others, and nothing trains until you choose to. Train your agent from the
         <a href="/studio" class="text-brand-600 hover:underline">Studio dashboard</a> when you're ready.
       </p>
 
       <div class="space-y-3 mb-8">
-        <button class="w-full text-left p-4 rounded-lg border-2 border-gray-200 hover:border-gray-300"
+        <button class="w-full text-left p-4 rounded-lg border-2 border-sand-200 hover:border-sand-300"
           on:click={() => goto('/studio/knowledge')}>
-          <div class="font-semibold text-gray-800">📚 Knowledge vault</div>
-          <div class="text-sm text-gray-500 mt-0.5">Browse your notes (list or graph), edit your resume.</div>
+          <div class="font-semibold text-sand-800">📚 Knowledge vault</div>
+          <div class="text-sm text-sand-500 mt-0.5">Browse your notes (list or graph), edit your resume.</div>
         </button>
-        <button class="w-full text-left p-4 rounded-lg border-2 border-gray-200 hover:border-gray-300"
+        <button class="w-full text-left p-4 rounded-lg border-2 border-sand-200 hover:border-sand-300"
           on:click={() => { hasExistingAgent = false; step = 2; }}>
-          <div class="font-semibold text-gray-800">🐙 GitHub knowledge</div>
-          <div class="text-sm text-gray-500 mt-0.5">Re-run GitHub ingestion to document more repos into your vault.</div>
+          <div class="font-semibold text-sand-800">🐙 GitHub knowledge</div>
+          <div class="text-sm text-sand-500 mt-0.5">Re-run GitHub ingestion to document more repos into your vault.</div>
         </button>
-        <button class="w-full text-left p-4 rounded-lg border-2 border-gray-200 hover:border-gray-300"
+        <button class="w-full text-left p-4 rounded-lg border-2 border-sand-200 hover:border-sand-300"
           on:click={() => { hasExistingAgent = false; step = 3; loadInterview(); }}>
-          <div class="font-semibold text-gray-800">🎤 Style interview</div>
-          <div class="text-sm text-gray-500 mt-0.5">Answer more open questions to capture your communication & reasoning style.</div>
+          <div class="font-semibold text-sand-800">🎤 Style interview</div>
+          <div class="text-sm text-sand-500 mt-0.5">Answer more open questions to capture your communication & reasoning style.</div>
         </button>
-        <button class="w-full text-left p-4 rounded-lg border-2 border-gray-200 hover:border-gray-300"
+        <button class="w-full text-left p-4 rounded-lg border-2 border-sand-200 hover:border-sand-300"
           on:click={() => { editingProfile = true; loadProfileForEdit(); hasExistingAgent = false; step = 1; }}>
-          <div class="font-semibold text-gray-800">👤 Profile & basic info</div>
-          <div class="text-sm text-gray-500 mt-0.5">Update your name, bio, rate, and experience.</div>
+          <div class="font-semibold text-sand-800">👤 Profile & basic info</div>
+          <div class="text-sm text-sand-500 mt-0.5">Update your name, bio, rate, and experience.</div>
         </button>
       </div>
 
@@ -264,12 +264,12 @@
     ] as s}
       <div class="flex items-center gap-2 {s.n < 3 ? 'flex-1' : ''}">
         <div class="w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold shrink-0
-          {step === s.n ? 'bg-brand-600 text-white' : step > s.n ? 'bg-green-500 text-white' : 'bg-gray-200 text-gray-500'}">
+          {step === s.n ? 'bg-brand-600 text-white' : step > s.n ? 'bg-green-500 text-white' : 'bg-sand-200 text-sand-500'}">
           {step > s.n ? '✓' : s.n}
         </div>
-        <span class="text-sm font-medium {step === s.n ? 'text-gray-900' : 'text-gray-400'}">{s.label}</span>
+        <span class="text-sm font-medium {step === s.n ? 'text-sand-900' : 'text-sand-400'}">{s.label}</span>
         {#if s.n < 3}
-          <div class="flex-1 h-px {step > s.n ? 'bg-green-400' : 'bg-gray-200'} mx-2"></div>
+          <div class="flex-1 h-px {step > s.n ? 'bg-green-400' : 'bg-sand-200'} mx-2"></div>
         {/if}
       </div>
     {/each}
@@ -279,7 +279,7 @@
   {#if step === 1}
     <div class="card p-8">
       <h1 class="text-2xl font-bold mb-1">Your professional identity</h1>
-      <p class="text-gray-500 mb-6">This becomes the public face of your agent on the marketplace.</p>
+      <p class="text-sand-500 mb-6">This becomes the public face of your agent on the marketplace.</p>
 
       <div class="space-y-5">
         <div>
@@ -287,7 +287,7 @@
           <input class="input" id="name" bind:value={name} placeholder="Rashad Arafeh" required />
         </div>
         <div>
-          <label class="label" for="bio">Professional bio <span class="text-gray-400 font-normal">(write in your own voice)</span></label>
+          <label class="label" for="bio">Professional bio <span class="text-sand-400 font-normal">(write in your own voice)</span></label>
           <textarea class="input min-h-[100px] resize-y" id="bio" bind:value={bio}
             placeholder="I'm a software engineer with 8 years building distributed systems. I care deeply about code clarity and pragmatic architecture..."></textarea>
         </div>
@@ -302,7 +302,7 @@
           </div>
         </div>
         <div>
-          <label class="label" for="resume">Resume <span class="text-gray-400 font-normal">(paste text — used on job applications and added to your knowledge base)</span></label>
+          <label class="label" for="resume">Resume <span class="text-sand-400 font-normal">(paste text — used on job applications and added to your knowledge base)</span></label>
           <textarea class="input min-h-[120px] resize-y text-sm" id="resume" bind:value={resumeText}
             placeholder="Paste your resume here. You can edit it later in your Knowledge vault."></textarea>
         </div>
@@ -321,7 +321,7 @@
   {:else if step === 2}
     <div class="card p-8">
       <h1 class="text-2xl font-bold mb-1">Knowledge ingestion</h1>
-      <p class="text-gray-500 mb-6">Connect your GitHub to extract your professional style guide. We'll read your public and private repos.</p>
+      <p class="text-sand-500 mb-6">Connect your GitHub to extract your professional style guide. We'll read your public and private repos.</p>
 
       {#if !ingestDone}
         <div class="space-y-4">
@@ -331,9 +331,9 @@
               {submitting ? 'Redirecting to GitHub...' : 'Connect GitHub'}
             </button>
           {:else}
-            <div class="flex items-center gap-3 bg-gray-50 rounded-lg px-4 py-3">
-              <svg class="w-5 h-5 text-gray-700 shrink-0" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/></svg>
-              <span class="text-sm text-gray-700">@{githubLogin}</span>
+            <div class="flex items-center gap-3 bg-sand-50 rounded-lg px-4 py-3">
+              <svg class="w-5 h-5 text-sand-700 shrink-0" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/></svg>
+              <span class="text-sm text-sand-700">@{githubLogin}</span>
               <span class="ml-auto text-xs text-brand-600 animate-pulse">{submitting ? 'Analyzing repos...' : ''}</span>
             </div>
           {/if}
@@ -360,7 +360,7 @@
           <div class="space-y-3 mb-6">
             {#each Object.entries(ingestResult.style_guide) as [key, values]}
               <div>
-                <div class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1.5">
+                <div class="text-xs font-semibold text-sand-500 uppercase tracking-wide mb-1.5">
                   {key.replace(/_/g, ' ')}
                 </div>
                 <div class="flex flex-wrap gap-1.5">
@@ -374,13 +374,13 @@
         {/if}
 
         <!-- Live progress of the agentic repo→vault documentation (the deep knowledge base). -->
-        <div class="border-t border-gray-100 pt-5 mt-5">
+        <div class="border-t border-sand-100 pt-5 mt-5">
           <IngestionProgress {agentId} on:complete={() => (ingestionComplete = true)} />
           <div class="flex items-center gap-3 mt-3">
             <button class="btn-ghost text-sm" disabled={submitting} on:click={() => triggerIngest(false)}>
               ↻ Build missing repos
             </button>
-            <button class="btn-ghost text-sm text-gray-400" disabled={submitting} on:click={() => triggerIngest(true)}>
+            <button class="btn-ghost text-sm text-sand-400" disabled={submitting} on:click={() => triggerIngest(true)}>
               Re-do all from scratch
             </button>
           </div>
@@ -393,7 +393,7 @@
         <button class="btn-ghost" on:click={() => step = 1}>← Back</button>
         <div class="flex items-center gap-3">
           {#if ingestDone && !ingestionComplete}
-            <span class="text-xs text-gray-400">Vault still building — you can proceed, but training is best after it finishes.</span>
+            <span class="text-xs text-sand-400">Vault still building — you can proceed, but training is best after it finishes.</span>
           {/if}
           <button class="btn-primary px-8" disabled={!ingestDone || submitting} on:click={loadInterview}>
             {submitting ? 'Loading...' : ingestionComplete ? 'Start interview →' : 'Continue anyway →'}
@@ -408,8 +408,8 @@
       <div class="card p-12 text-center">
         <div class="text-6xl mb-4">✅</div>
         <h2 class="text-2xl font-bold mb-2">Knowledge base ready</h2>
-        <p class="text-gray-500 mb-2">We've captured your communication & reasoning style from {answeredCount} question{answeredCount === 1 ? '' : 's'}, added to your knowledge vault.</p>
-        <p class="text-gray-400 text-sm mb-8">Nothing trains automatically. When you're happy with your knowledge base, click <strong>Train agent</strong> on the Studio dashboard to build your LoRA — you can keep enriching it (more repos, more interview answers) first.</p>
+        <p class="text-sand-500 mb-2">We've captured your communication & reasoning style from {answeredCount} question{answeredCount === 1 ? '' : 's'}, added to your knowledge vault.</p>
+        <p class="text-sand-400 text-sm mb-8">Nothing trains automatically. When you're happy with your knowledge base, click <strong>Train agent</strong> on the Studio dashboard to build your LoRA — you can keep enriching it (more repos, more interview answers) first.</p>
         <div class="flex gap-3 justify-center">
           <button class="btn-secondary" on:click={() => goto('/studio/knowledge')}>
             View knowledge vault
@@ -423,7 +423,7 @@
       <div class="card p-8">
         <div class="mb-2">
           <h1 class="text-xl font-bold">Style interview</h1>
-          <p class="text-sm text-gray-500 mt-1">
+          <p class="text-sm text-sand-500 mt-1">
             A few open questions about how you communicate and reason — the part your code can't show.
             Answer in your own voice; a couple of sentences each is plenty. You can skip any.
           </p>
@@ -443,14 +443,14 @@
               ></textarea>
             </div>
           {:else}
-            <p class="text-sm text-gray-400">No questions loaded.</p>
+            <p class="text-sm text-sand-400">No questions loaded.</p>
           {/each}
         </div>
 
         {#if error}<div class="text-red-600 text-sm bg-red-50 rounded-lg px-3 py-2 mt-4">{error}</div>{/if}
 
         <div class="flex items-center justify-between mt-8">
-          <span class="text-xs text-gray-400">{answeredCount} of {questions.length} answered</span>
+          <span class="text-xs text-sand-400">{answeredCount} of {questions.length} answered</span>
           <button
             class="btn-primary px-8"
             disabled={answeredCount === 0 || submitting}

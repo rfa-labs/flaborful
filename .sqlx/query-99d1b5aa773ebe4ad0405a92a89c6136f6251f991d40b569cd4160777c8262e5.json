@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT EXISTS(SELECT 1 FROM ingestion_events\n                       WHERE owner_kind = 'agent' AND agent_id = $1 AND kind = 'status' AND status = 'complete')",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "exists",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "99d1b5aa773ebe4ad0405a92a89c6136f6251f991d40b569cd4160777c8262e5"
+}

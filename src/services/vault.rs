@@ -89,11 +89,48 @@ pub fn normalize_domain(domain: Option<&str>) -> Option<String> {
     }
 }
 
+/// Who owns a vault. Composable vaults have two owner kinds: a professional's agent, and a
+/// company (its per-repo codebase knowledge graph). The owner is `(kind, id)`; in storage the
+/// id lives in the `agent_id` column (the generic owner-id carrier) discriminated by `owner_kind`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VaultOwner {
+    Agent(Uuid),
+    Company(Uuid),
+}
+
+impl VaultOwner {
+    /// The stored discriminator string ("agent" | "company").
+    pub fn kind_str(&self) -> &'static str {
+        match self {
+            VaultOwner::Agent(_) => "agent",
+            VaultOwner::Company(_) => "company",
+        }
+    }
+    /// The owner's id (agent id or company id).
+    pub fn id(&self) -> Uuid {
+        match self {
+            VaultOwner::Agent(id) | VaultOwner::Company(id) => *id,
+        }
+    }
+    /// Reconstruct from a stored (kind, id) pair. Unknown kind → Agent (forward-compatible).
+    pub fn from_parts(kind: &str, id: Uuid) -> Self {
+        match kind {
+            "company" => VaultOwner::Company(id),
+            _ => VaultOwner::Agent(id),
+        }
+    }
+}
+
 /// A vault note — the source-of-truth unit. `id` doubles as the derived Qdrant chunk id.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VaultNote {
     pub id: Uuid,
+    /// The vault owner's id (agent id or company id), discriminated by `owner_kind`. Kept named
+    /// `agent_id` because it maps 1:1 to the storage column and the Qdrant chunk's owner-id field;
+    /// use `owner()` for the typed owner.
     pub agent_id: Uuid,
+    /// "agent" | "company" — the owner namespace this note belongs to.
+    pub owner_kind: String,
     pub slug: String,
     pub title: String,
     pub body: String,
@@ -110,6 +147,10 @@ impl VaultNote {
     /// The text embedded + made searchable: title + body (so a title-only match still hits).
     fn searchable_text(&self) -> String {
         format!("{}\n\n{}", self.title, self.body)
+    }
+    /// The typed owner of this note.
+    pub fn owner(&self) -> VaultOwner {
+        VaultOwner::from_parts(&self.owner_kind, self.agent_id)
     }
 }
 
@@ -196,14 +237,15 @@ pub async fn upsert_note(
     let domain = normalize_domain(note.domain.as_deref());
     sqlx::query!(
         r#"INSERT INTO vault_notes
-             (id, agent_id, slug, title, body, layer, source_type, visibility, domain, related, repo, job_id, updated_at)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12, NOW())
-           ON CONFLICT (agent_id, slug) DO UPDATE SET
+             (id, owner_kind, agent_id, slug, title, body, layer, source_type, visibility, domain, related, repo, job_id, updated_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13, NOW())
+           ON CONFLICT (owner_kind, agent_id, slug) DO UPDATE SET
              title = EXCLUDED.title, body = EXCLUDED.body, layer = EXCLUDED.layer,
              source_type = EXCLUDED.source_type, visibility = EXCLUDED.visibility,
              domain = EXCLUDED.domain, related = EXCLUDED.related, repo = EXCLUDED.repo,
              job_id = EXCLUDED.job_id, updated_at = NOW()"#,
         note.id,
+        note.owner_kind,
         note.agent_id,
         note.slug,
         note.title,
@@ -221,7 +263,7 @@ pub async fn upsert_note(
 
     // Re-read the canonical id (an upsert on an existing slug keeps the original id, which the
     // derived chunk must match).
-    let canonical = get_note(db, note.agent_id, &note.slug)
+    let canonical = get_note(db, note.owner(), &note.slug)
         .await?
         .ok_or_else(|| anyhow!("vault: note vanished after upsert"))?;
 
@@ -229,7 +271,7 @@ pub async fn upsert_note(
     let _ = mirror_to_r2(&canonical).await;
     let _ = knowledge::record_event(
         db,
-        canonical.agent_id,
+        canonical.owner(),
         canonical.id,
         "added",
         &canonical.source_type,
@@ -239,58 +281,76 @@ pub async fn upsert_note(
     Ok(canonical)
 }
 
-pub async fn get_note(db: &PgPool, agent_id: Uuid, slug: &str) -> Result<Option<VaultNote>> {
-    let row = sqlx::query!(
-        r#"SELECT id, agent_id, slug, title, body, layer, source_type, visibility,
-                  domain, related, repo, job_id
-           FROM vault_notes WHERE agent_id = $1 AND slug = $2"#,
+/// Map a vault_notes row into a `VaultNote`. Shared by the row-returning queries.
+fn note_from_row(
+    id: Uuid,
+    owner_kind: String,
+    agent_id: Uuid,
+    slug: String,
+    title: String,
+    body: String,
+    layer: String,
+    source_type: String,
+    visibility: String,
+    domain: Option<String>,
+    related: Vec<String>,
+    repo: Option<String>,
+    job_id: Option<Uuid>,
+) -> VaultNote {
+    VaultNote {
+        id,
         agent_id,
+        owner_kind,
+        slug,
+        title,
+        body,
+        layer: NoteLayer::from_str(&layer),
+        source_type: KnowledgeSourceType::from_str(&source_type)
+            .unwrap_or(KnowledgeSourceType::Portfolio),
+        visibility: ChunkVisibility::from_str(&visibility),
+        domain,
+        related,
+        repo,
+        job_id,
+    }
+}
+
+pub async fn get_note(db: &PgPool, owner: VaultOwner, slug: &str) -> Result<Option<VaultNote>> {
+    let row = sqlx::query!(
+        r#"SELECT id, owner_kind, agent_id, slug, title, body, layer, source_type, visibility,
+                  domain, related, repo, job_id
+           FROM vault_notes WHERE owner_kind = $1 AND agent_id = $2 AND slug = $3"#,
+        owner.kind_str(),
+        owner.id(),
         slug,
     )
     .fetch_optional(db)
     .await?;
-    Ok(row.map(|r| VaultNote {
-        id: r.id,
-        agent_id: r.agent_id,
-        slug: r.slug,
-        title: r.title,
-        body: r.body,
-        layer: NoteLayer::from_str(&r.layer),
-        source_type: KnowledgeSourceType::from_str(&r.source_type)
-            .unwrap_or(KnowledgeSourceType::Portfolio),
-        visibility: ChunkVisibility::from_str(&r.visibility),
-        domain: r.domain,
-        related: r.related,
-        repo: r.repo,
-        job_id: r.job_id,
+    Ok(row.map(|r| {
+        note_from_row(
+            r.id, r.owner_kind, r.agent_id, r.slug, r.title, r.body, r.layer, r.source_type,
+            r.visibility, r.domain, r.related, r.repo, r.job_id,
+        )
     }))
 }
 
-pub async fn list_notes_for_agent(db: &PgPool, agent_id: Uuid) -> Result<Vec<VaultNote>> {
+pub async fn list_notes_for_owner(db: &PgPool, owner: VaultOwner) -> Result<Vec<VaultNote>> {
     let rows = sqlx::query!(
-        r#"SELECT id, agent_id, slug, title, body, layer, source_type, visibility,
+        r#"SELECT id, owner_kind, agent_id, slug, title, body, layer, source_type, visibility,
                   domain, related, repo, job_id
-           FROM vault_notes WHERE agent_id = $1 ORDER BY updated_at DESC"#,
-        agent_id,
+           FROM vault_notes WHERE owner_kind = $1 AND agent_id = $2 ORDER BY updated_at DESC"#,
+        owner.kind_str(),
+        owner.id(),
     )
     .fetch_all(db)
     .await?;
     Ok(rows
         .into_iter()
-        .map(|r| VaultNote {
-            id: r.id,
-            agent_id: r.agent_id,
-            slug: r.slug,
-            title: r.title,
-            body: r.body,
-            layer: NoteLayer::from_str(&r.layer),
-            source_type: KnowledgeSourceType::from_str(&r.source_type)
-                .unwrap_or(KnowledgeSourceType::Portfolio),
-            visibility: ChunkVisibility::from_str(&r.visibility),
-            domain: r.domain,
-            related: r.related,
-            repo: r.repo,
-            job_id: r.job_id,
+        .map(|r| {
+            note_from_row(
+                r.id, r.owner_kind, r.agent_id, r.slug, r.title, r.body, r.layer, r.source_type,
+                r.visibility, r.domain, r.related, r.repo, r.job_id,
+            )
         })
         .collect())
 }
@@ -298,13 +358,13 @@ pub async fn list_notes_for_agent(db: &PgPool, agent_id: Uuid) -> Result<Vec<Vau
 /// Fetch notes by slug (graph-hop / follow_links target resolution).
 pub async fn notes_by_slugs(
     db: &PgPool,
-    agent_id: Uuid,
+    owner: VaultOwner,
     slugs: &[String],
 ) -> Result<Vec<VaultNote>> {
     if slugs.is_empty() {
         return Ok(vec![]);
     }
-    let all = list_notes_for_agent(db, agent_id).await?;
+    let all = list_notes_for_owner(db, owner).await?;
     let want: HashSet<&str> = slugs.iter().map(|s| s.as_str()).collect();
     Ok(all
         .into_iter()
@@ -313,8 +373,8 @@ pub async fn notes_by_slugs(
 }
 
 /// Delete a note (source of truth), its derived chunk, and log a timeline event.
-pub async fn delete_note(db: &PgPool, qdrant: &Qdrant, agent_id: Uuid, slug: &str) -> Result<()> {
-    let Some(note) = get_note(db, agent_id, slug).await? else {
+pub async fn delete_note(db: &PgPool, qdrant: &Qdrant, owner: VaultOwner, slug: &str) -> Result<()> {
+    let Some(note) = get_note(db, owner, slug).await? else {
         return Ok(());
     };
     sqlx::query!("DELETE FROM vault_notes WHERE id = $1", note.id)
@@ -323,7 +383,7 @@ pub async fn delete_note(db: &PgPool, qdrant: &Qdrant, agent_id: Uuid, slug: &st
     let _ = knowledge::delete_chunk(qdrant, note.id).await;
     let _ = knowledge::record_event(
         db,
-        agent_id,
+        owner,
         note.id,
         "deleted",
         &note.source_type,
@@ -347,6 +407,7 @@ pub async fn index_note(
     let chunk = KnowledgeChunk {
         id: note.id,
         agent_id: note.agent_id,
+        owner_kind: note.owner_kind.clone(),
         job_id: note.job_id,
         content: note.body.clone(),
         source_type: note.source_type.clone(),
@@ -355,26 +416,26 @@ pub async fn index_note(
     knowledge::upsert_chunks(qdrant, vec![chunk], embeddings).await
 }
 
-/// Rebuild the entire Qdrant index for an agent from `vault_notes` (the rebuildable-index
+/// Rebuild the entire Qdrant index for one owner from `vault_notes` (the rebuildable-index
 /// guarantee). Returns the number of notes (re)indexed.
-pub async fn reindex_agent(
+pub async fn reindex_owner(
     db: &PgPool,
     qdrant: &Qdrant,
     inference: &InferenceClient,
-    agent_id: Uuid,
+    owner: VaultOwner,
 ) -> Result<usize> {
-    let notes = list_notes_for_agent(db, agent_id).await?;
+    let notes = list_notes_for_owner(db, owner).await?;
     for note in &notes {
         index_note(qdrant, inference, note).await?;
     }
     Ok(notes.len())
 }
 
-/// Repair `related[]` for all of an agent's existing notes: re-normalize each (strip `[[ ]]`
+/// Repair `related[]` for all of an owner's existing notes: re-normalize each (strip `[[ ]]`
 /// wikilink wrappers, drop empties/self/dupes) so stored links match real slugs and graph edges
 /// resolve. Idempotent — safe to re-run. Returns how many notes had their links changed.
-pub async fn repair_related_links(db: &PgPool, agent_id: Uuid) -> Result<usize> {
-    let notes = list_notes_for_agent(db, agent_id).await?;
+pub async fn repair_related_links(db: &PgPool, owner: VaultOwner) -> Result<usize> {
+    let notes = list_notes_for_owner(db, owner).await?;
     let mut fixed = 0;
     for n in &notes {
         let mut seen = std::collections::HashSet::new();
@@ -407,6 +468,17 @@ pub struct RetrievalFilter {
     pub domain: Option<String>,
     /// When true, exclude Private notes (company-facing paths). Default false (owner/agent).
     pub shareable_only: bool,
+    /// When non-empty, only return notes whose `repo` is in this allowlist. Used to scope a
+    /// composed company overlay to the repo(s) a hired agent's task actually targets.
+    pub repos: Vec<String>,
+}
+
+/// A read-only overlay vault attached to a retrieval (composition): another owner's vault, scoped
+/// to an optional repo allowlist.
+#[derive(Debug, Clone)]
+pub struct VaultOverlay {
+    pub owner: VaultOwner,
+    pub repos: Vec<String>,
 }
 
 /// A retrieved note plus a coarse relevance score (for ordering / blueprint assembly).
@@ -417,12 +489,13 @@ pub struct RetrievedNote {
 }
 
 /// Hybrid retrieval: semantic (Qdrant) ⊕ keyword (Postgres tsvector), merged ~70/30, then one
-/// `related:` graph hop. Visibility + metadata filters are enforced server-side here.
+/// `related:` graph hop. Visibility + metadata filters are enforced server-side here. Scoped to
+/// one vault owner (agent or company).
 pub async fn retrieve(
     db: &PgPool,
     qdrant: &Qdrant,
     inference: &InferenceClient,
-    agent_id: Uuid,
+    owner: VaultOwner,
     query: &str,
     filter: &RetrievalFilter,
     k: usize,
@@ -433,7 +506,9 @@ pub async fn retrieve(
     // Semantic half (vector). Over-fetch so post-filtering still yields k.
     let embeddings = inference.embed(vec![query.to_string()]).await?;
     if let Some(qv) = embeddings.into_iter().next() {
-        let chunks = knowledge::search_chunks(qdrant, qv, agent_id, (k * 3) as u64, 0.5).await?;
+        let chunks =
+            knowledge::search_chunks(qdrant, qv, owner.kind_str(), owner.id(), (k * 3) as u64, 0.5)
+                .await?;
         // Qdrant returns in descending similarity; approximate a rank-decay score.
         for (rank, c) in chunks.iter().enumerate() {
             let s = 0.70 * (1.0 - (rank as f32) / (chunks.len().max(1) as f32));
@@ -443,11 +518,12 @@ pub async fn retrieve(
 
     // Keyword half (BM25-ish via ts_rank over the same rows).
     let kw = sqlx::query!(
-        r#"SELECT id, ts_rank(tsv, plainto_tsquery('english', $2)) AS rank
+        r#"SELECT id, ts_rank(tsv, plainto_tsquery('english', $3)) AS rank
            FROM vault_notes
-           WHERE agent_id = $1 AND tsv @@ plainto_tsquery('english', $2)
-           ORDER BY rank DESC LIMIT $3"#,
-        agent_id,
+           WHERE owner_kind = $1 AND agent_id = $2 AND tsv @@ plainto_tsquery('english', $3)
+           ORDER BY rank DESC LIMIT $4"#,
+        owner.kind_str(),
+        owner.id(),
         query,
         (k * 3) as i64,
     )
@@ -464,7 +540,7 @@ pub async fn retrieve(
     }
 
     // Resolve to notes, apply metadata + visibility filters.
-    let all = list_notes_for_agent(db, agent_id).await?;
+    let all = list_notes_for_owner(db, owner).await?;
     let by_id: std::collections::HashMap<Uuid, VaultNote> =
         all.into_iter().map(|n| (n.id, n)).collect();
 
@@ -481,6 +557,14 @@ pub async fn retrieve(
             if n.domain.as_deref() != Some(d.as_str()) {
                 return false;
             }
+        }
+        if !filter.repos.is_empty()
+            && !n
+                .repo
+                .as_deref()
+                .map_or(false, |r| filter.repos.iter().any(|allowed| allowed == r))
+        {
+            return false;
         }
         true
     };
@@ -508,7 +592,7 @@ pub async fn retrieve(
     let present: HashSet<Uuid> = hits.iter().map(|h| h.note.id).collect();
     let related_slugs: Vec<String> = hits.iter().flat_map(|h| h.note.related.clone()).collect();
     if !related_slugs.is_empty() {
-        for n in notes_by_slugs(db, agent_id, &related_slugs).await? {
+        for n in notes_by_slugs(db, owner, &related_slugs).await? {
             if !present.contains(&n.id) && passes(&n) {
                 hits.push(RetrievedNote {
                     note: n,
@@ -519,6 +603,36 @@ pub async fn retrieve(
     }
 
     Ok(hits)
+}
+
+/// Composed retrieval across a PRIMARY owner plus read-only OVERLAY owners (vault composition).
+/// Each overlay carries an optional `repos` allowlist so a hired agent sees only the company
+/// repo vault(s) attached to its task — not the company's whole vault. Hits from all owners are
+/// merged and re-sorted by score; the primary's results are not privileged beyond their score.
+pub async fn retrieve_composed(
+    db: &PgPool,
+    qdrant: &Qdrant,
+    inference: &InferenceClient,
+    primary: VaultOwner,
+    overlays: &[VaultOverlay],
+    query: &str,
+    filter: &RetrievalFilter,
+    k: usize,
+) -> Result<Vec<RetrievedNote>> {
+    let mut all = retrieve(db, qdrant, inference, primary, query, filter, k).await?;
+    for ov in overlays {
+        let mut f = filter.clone();
+        // An overlay is another owner's vault attached read-only; scope it to the allowed repos.
+        f.repos = ov.repos.clone();
+        let hits = retrieve(db, qdrant, inference, ov.owner, query, &f, k).await?;
+        all.extend(hits);
+    }
+    all.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    Ok(all)
 }
 
 // ── Migration / backfill from the legacy Qdrant-only KB ─────────────────────────────────────
@@ -534,7 +648,7 @@ pub async fn backfill_from_qdrant(
     agent_id: Uuid,
 ) -> Result<usize> {
     let existing = sqlx::query_scalar!(
-        "SELECT COUNT(*) FROM vault_notes WHERE agent_id = $1",
+        "SELECT COUNT(*) FROM vault_notes WHERE owner_kind = 'agent' AND agent_id = $1",
         agent_id
     )
     .fetch_one(db)
@@ -563,6 +677,7 @@ pub async fn backfill_from_qdrant(
         let note = VaultNote {
             id: c.id, // preserve the chunk id 1:1
             agent_id,
+            owner_kind: "agent".to_string(),
             slug: format!("imported-{}", c.id.simple()),
             title,
             body: c.content,
@@ -578,10 +693,11 @@ pub async fn backfill_from_qdrant(
         // it once); but reuse the same insert shape.
         sqlx::query!(
             r#"INSERT INTO vault_notes
-                 (id, agent_id, slug, title, body, layer, source_type, visibility, related, job_id)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-               ON CONFLICT (agent_id, slug) DO NOTHING"#,
+                 (id, owner_kind, agent_id, slug, title, body, layer, source_type, visibility, related, job_id)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+               ON CONFLICT (owner_kind, agent_id, slug) DO NOTHING"#,
             note.id,
+            note.owner_kind,
             note.agent_id,
             note.slug,
             note.title,
@@ -598,7 +714,7 @@ pub async fn backfill_from_qdrant(
     }
 
     // Re-derive the index from the new source of truth and assert parity.
-    let reindexed = reindex_agent(db, qdrant, inference, agent_id).await?;
+    let reindexed = reindex_owner(db, qdrant, inference, VaultOwner::Agent(agent_id)).await?;
     if reindexed != created {
         tracing::warn!(
             "vault backfill parity mismatch for agent {}: {} notes vs {} reindexed",
@@ -641,7 +757,11 @@ pub async fn mirror_to_r2(note: &VaultNote) -> Result<()> {
         .behavior_version_latest()
         .build();
     let s3 = S3Client::from_conf(config);
-    let key = format!("vault/agents/{}/{}.md", note.agent_id, note.slug);
+    // Namespace by owner kind so company vaults don't collide with agent vaults in the bucket.
+    let key = format!(
+        "vault/{}s/{}/{}.md",
+        note.owner_kind, note.agent_id, note.slug
+    );
     s3.put_object()
         .bucket(bucket)
         .key(key)
@@ -693,7 +813,7 @@ pub async fn application_graph(
     agent_id: Uuid,
     shared_ids: &[Uuid],
 ) -> Result<VaultGraph> {
-    let notes = list_notes_for_agent(db, agent_id).await?;
+    let notes = list_notes_for_owner(db, VaultOwner::Agent(agent_id)).await?;
     let shared: HashSet<Uuid> = shared_ids.iter().copied().collect();
     let slugs: HashSet<&str> = notes.iter().map(|n| n.slug.as_str()).collect();
 
@@ -748,16 +868,62 @@ pub async fn application_graph(
     Ok(VaultGraph { nodes, edges })
 }
 
+/// Build the full, un-anonymized graph of an owner's own vault (the List ⇄ Graph view the owner
+/// sees — a professional of their vault, or a company of its repo knowledge graph). Every node
+/// carries its real title/body; edges are `related` links whose target exists.
+pub async fn owner_graph(db: &PgPool, owner: VaultOwner) -> Result<VaultGraph> {
+    let notes = list_notes_for_owner(db, owner).await?;
+    let slugs: HashSet<&str> = notes.iter().map(|n| n.slug.as_str()).collect();
+
+    let nodes = notes
+        .iter()
+        .map(|n| GraphNode {
+            slug: n.slug.clone(),
+            title: n.title.clone(),
+            layer: n.layer.as_str().to_string(),
+            domain: n.domain.clone(),
+            locked: false,
+            body: Some(n.body.clone()),
+        })
+        .collect();
+
+    let edges = notes
+        .iter()
+        .flat_map(|n| {
+            n.related
+                .iter()
+                .map(|t| normalize_ref(t))
+                .filter(|t| slugs.contains(t.as_str()) && t != &n.slug)
+                .map(|t| GraphEdge {
+                    source: n.slug.clone(),
+                    target: t,
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect();
+
+    Ok(VaultGraph { nodes, edges })
+}
+
 // ── Shared tool handler (used by both the MCP route and the Managed Agents backend) ─────────
 
-/// Run one vault tool by name against an agent's vault and return the text payload. This is the
-/// single place vault-tool logic lives — the `mcp_vault` route and the Managed-Agents custom-tool
-/// flow both call it, exactly as `taste::consult` is shared. `args` is the tool's JSON arguments.
+/// Run one vault tool by name and return the text payload. This is the single place vault-tool
+/// logic lives — the `mcp_vault` route and the Managed-Agents custom-tool flow both call it,
+/// exactly as `taste::consult` is shared. `args` is the tool's JSON arguments.
+///
+/// WRITES (`upsert_note`, `record_experience`, `record_technical`) target a specific owner;
+/// READS (`list_vault`, `read_note`, `search_vault`, `follow_links`) compose the primary `owner`
+/// with any read-only `overlays` (vault composition for a hired task), so the agent transparently
+/// browses both its own vault and the company repo vault(s) attached to its task.
+///
+/// `record_experience` always writes to the primary owner (the professional); `record_technical`
+/// writes to the first overlay's owner if present (the company vault), else the primary.
 pub async fn handle_tool(
     db: &PgPool,
     qdrant: &Qdrant,
     inference: &InferenceClient,
-    agent_id: Uuid,
+    owner: VaultOwner,
+    overlays: &[VaultOverlay],
     tool: &str,
     args: &serde_json::Value,
 ) -> Result<String> {
@@ -767,53 +933,105 @@ pub async fn handle_tool(
             .map(|s| s.to_string())
             .filter(|s| !s.trim().is_empty())
     };
-    let arr_arg = |k: &str| -> Vec<String> {
-        args.get(k)
+    // Build a note destined for `dest` from the tool args, carrying an existing note's id +
+    // visibility when the slug already exists in that owner's vault (so writes are idempotent).
+    // Takes the raw args Value (not closures) so the returned future stays `Send`.
+    async fn note_from_args(
+        db: &PgPool,
+        dest: VaultOwner,
+        slug: &str,
+        args: &serde_json::Value,
+    ) -> Result<VaultNote> {
+        let s = |k: &str| -> Option<String> {
+            args.get(k)
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .filter(|s| !s.trim().is_empty())
+        };
+        let title = s("title").unwrap_or_else(|| slug.to_string());
+        let body = s("body").ok_or_else(|| anyhow!("'body' required"))?;
+        let layer = NoteLayer::from_str(&s("layer").unwrap_or_default());
+        let related: Vec<String> = args
+            .get("related")
             .and_then(|v| v.as_array())
             .map(|a| {
                 a.iter()
                     .filter_map(|x| x.as_str().map(String::from))
                     .collect()
             })
-            .unwrap_or_default()
-    };
+            .unwrap_or_default();
+        let existing = get_note(db, dest, slug).await?;
+        let (id, visibility, source_type) = match &existing {
+            Some(n) => (n.id, n.visibility, n.source_type.clone()),
+            None => (
+                Uuid::new_v4(),
+                ChunkVisibility::Private,
+                KnowledgeSourceType::ApprovedOutput,
+            ),
+        };
+        Ok(VaultNote {
+            id,
+            agent_id: dest.id(),
+            owner_kind: dest.kind_str().to_string(),
+            slug: slug.to_string(),
+            title,
+            body,
+            layer,
+            source_type,
+            visibility,
+            domain: s("domain"),
+            related,
+            repo: s("repo"),
+            job_id: None,
+        })
+    }
+
+    // Owners whose notes the read tools span: the primary plus each overlay.
+    let read_owners: Vec<VaultOwner> = std::iter::once(owner)
+        .chain(overlays.iter().map(|o| o.owner))
+        .collect();
+    // Collect notes across every read owner (used by list/read/follow_links).
+    async fn all_read_notes(db: &PgPool, owners: &[VaultOwner]) -> Result<Vec<VaultNote>> {
+        let mut out = Vec::new();
+        for o in owners {
+            out.extend(list_notes_for_owner(db, *o).await?);
+        }
+        Ok(out)
+    }
 
     match tool {
         "upsert_note" => {
             let slug = str_arg("slug").ok_or_else(|| anyhow!("upsert_note: 'slug' required"))?;
-            let title = str_arg("title").unwrap_or_else(|| slug.clone());
-            let body = str_arg("body").ok_or_else(|| anyhow!("upsert_note: 'body' required"))?;
-            let layer = NoteLayer::from_str(&str_arg("layer").unwrap_or_default());
-            let existing = get_note(db, agent_id, &slug).await?;
-            let (id, visibility, source_type) = match &existing {
-                Some(n) => (n.id, n.visibility, n.source_type.clone()),
-                None => (
-                    Uuid::new_v4(),
-                    ChunkVisibility::Private,
-                    KnowledgeSourceType::ApprovedOutput,
-                ),
-            };
-            let note = VaultNote {
-                id,
-                agent_id,
-                slug: slug.clone(),
-                title,
-                body,
-                layer,
-                source_type,
-                visibility,
-                domain: str_arg("domain"),
-                related: arr_arg("related"),
-                repo: str_arg("repo"),
-                job_id: None,
-            };
+            let note = note_from_args(db, owner, &slug, args).await?;
             upsert_note(db, qdrant, inference, note).await?;
             Ok(format!("Saved note '{slug}'."))
+        }
+        // Experience node: the transferable, IP-sanitized record of the work — owned by the
+        // professional (always the primary owner). What was built, the architecture, patterns
+        // learned/applied — never the company's proprietary specifics.
+        "record_experience" => {
+            let slug =
+                str_arg("slug").ok_or_else(|| anyhow!("record_experience: 'slug' required"))?;
+            let note = note_from_args(db, owner, &slug, args).await?;
+            upsert_note(db, qdrant, inference, note).await?;
+            Ok(format!("Recorded experience note '{slug}' in your vault."))
+        }
+        // Technical (tntmhpd) node: the concrete work product in context of the company's
+        // codebase — proprietary detail allowed. Owned by the company (first overlay), so it
+        // stays with the company's vault. Falls back to the primary owner if no overlay (e.g. a
+        // company running a tool against its own vault).
+        "record_technical" => {
+            let slug =
+                str_arg("slug").ok_or_else(|| anyhow!("record_technical: 'slug' required"))?;
+            let dest = overlays.first().map(|o| o.owner).unwrap_or(owner);
+            let note = note_from_args(db, dest, &slug, args).await?;
+            upsert_note(db, qdrant, inference, note).await?;
+            Ok(format!("Recorded technical note '{slug}' in the company vault."))
         }
         "list_vault" => {
             let layer = str_arg("layer").map(|s| NoteLayer::from_str(&s));
             let domain = str_arg("domain");
-            let notes = list_notes_for_agent(db, agent_id).await?;
+            let notes = all_read_notes(db, &read_owners).await?;
             let filtered: Vec<&VaultNote> = notes
                 .iter()
                 .filter(|n| layer.map_or(true, |l| n.layer == l))
@@ -834,10 +1052,12 @@ pub async fn handle_tool(
         }
         "read_note" => {
             let slug = str_arg("slug").ok_or_else(|| anyhow!("read_note: 'slug' required"))?;
-            match get_note(db, agent_id, &slug).await? {
-                Some(n) => Ok(to_markdown(&n)),
-                None => Ok(format!("No note with slug '{slug}'.")),
+            for o in &read_owners {
+                if let Some(n) = get_note(db, *o, &slug).await? {
+                    return Ok(to_markdown(&n));
+                }
             }
+            Ok(format!("No note with slug '{slug}'."))
         }
         "search_vault" => {
             let query =
@@ -846,8 +1066,11 @@ pub async fn handle_tool(
                 layer: str_arg("layer").map(|s| NoteLayer::from_str(&s)),
                 domain: str_arg("domain"),
                 shareable_only: false,
+                repos: vec![],
             };
-            let hits = retrieve(db, qdrant, inference, agent_id, &query, &filter, 6).await?;
+            let hits =
+                retrieve_composed(db, qdrant, inference, owner, overlays, &query, &filter, 6)
+                    .await?;
             if hits.is_empty() {
                 return Ok("(no matching notes)".into());
             }
@@ -859,13 +1082,24 @@ pub async fn handle_tool(
         }
         "follow_links" => {
             let slug = str_arg("slug").ok_or_else(|| anyhow!("follow_links: 'slug' required"))?;
-            let Some(note) = get_note(db, agent_id, &slug).await? else {
+            // Find the note in whichever read owner has it, then resolve neighbors across all.
+            let mut found: Option<VaultNote> = None;
+            for o in &read_owners {
+                if let Some(n) = get_note(db, *o, &slug).await? {
+                    found = Some(n);
+                    break;
+                }
+            }
+            let Some(note) = found else {
                 return Ok(format!("No note with slug '{slug}'."));
             };
             if note.related.is_empty() {
                 return Ok(format!("'{slug}' has no related links."));
             }
-            let neighbors = notes_by_slugs(db, agent_id, &note.related).await?;
+            let mut neighbors = Vec::new();
+            for o in &read_owners {
+                neighbors.extend(notes_by_slugs(db, *o, &note.related).await?);
+            }
             if neighbors.is_empty() {
                 return Ok(format!(
                     "'{slug}' links to {:?} but none exist yet.",
@@ -905,6 +1139,7 @@ mod tests {
         let note = VaultNote {
             id: Uuid::nil(),
             agent_id: Uuid::nil(),
+            owner_kind: "agent".into(),
             slug: "x".into(),
             title: "T".into(),
             body: "body [[y]]".into(),

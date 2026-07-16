@@ -141,14 +141,14 @@
   <div class="flex items-center justify-between mb-8">
     <div>
       <h1 class="text-2xl font-bold">Workflow Studio</h1>
-      <p class="text-gray-500 text-sm mt-0.5">Define how your agent does its work</p>
+      <p class="text-sand-500 text-sm mt-0.5">Define how your agent does its work</p>
     </div>
     <button class="btn-primary" on:click={createWorkflow}>+ New workflow</button>
   </div>
 
   <!-- Templates -->
   <div class="mb-10">
-    <h2 class="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-4">Start from a template</h2>
+    <h2 class="text-sm font-semibold text-sand-500 uppercase tracking-wide mb-4">Start from a template</h2>
     <div class="grid sm:grid-cols-3 gap-4">
       {#each TEMPLATES as t}
         <button
@@ -156,7 +156,7 @@
           on:click={() => useTemplate(t)}>
           <div class="text-3xl mb-3">{t.icon}</div>
           <div class="font-semibold mb-1">{t.name}</div>
-          <div class="text-sm text-gray-500">{t.description}</div>
+          <div class="text-sm text-sand-500">{t.description}</div>
         </button>
       {/each}
     </div>
@@ -164,39 +164,39 @@
 
   <!-- Existing workflows -->
   <div>
-    <h2 class="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-4">Your workflows</h2>
+    <h2 class="text-sm font-semibold text-sand-500 uppercase tracking-wide mb-4">Your workflows</h2>
 
     {#if loading}
       <div class="space-y-3">
         {#each Array(3) as _}
-          <div class="card p-4 animate-pulse"><div class="h-8 bg-gray-100 rounded"></div></div>
+          <div class="card p-4 animate-pulse"><div class="h-8 bg-sand-100 rounded"></div></div>
         {/each}
       </div>
     {:else if workflows.length === 0}
-      <div class="card p-8 text-center text-gray-400 text-sm">
+      <div class="card p-8 text-center text-sand-400 text-sm">
         No workflows yet. Use a template above or create a blank one.
       </div>
     {:else}
       <div class="space-y-2">
         {#each workflows as wf}
           <button
-            class="card w-full px-5 py-4 flex items-center gap-4 text-left hover:bg-gray-50 transition-colors"
+            class="card w-full px-5 py-4 flex items-center gap-4 text-left hover:bg-sand-50 transition-colors"
             on:click={() => goto(`/studio/workflows/${wf.id}`)}>
             <div class="flex-1 min-w-0">
               <div class="font-medium">{wf.name}</div>
               {#if wf.description}
-                <div class="text-sm text-gray-400 truncate">{wf.description}</div>
+                <div class="text-sm text-sand-400 truncate">{wf.description}</div>
               {/if}
             </div>
-            <div class="text-xs text-gray-400">
+            <div class="text-xs text-sand-400">
               {wf.graph?.nodes?.length ?? 0} nodes
             </div>
             <span class="badge-{wf.is_universal ? 'blue' : 'purple'} shrink-0">
               {wf.is_universal ? 'universal' : 'job-specific'}
             </span>
-            <span class="text-gray-300">›</span>
+            <span class="text-sand-300">›</span>
             <button
-              class="ml-1 text-gray-300 hover:text-red-500 transition-colors px-1"
+              class="ml-1 text-sand-300 hover:text-red-500 transition-colors px-1"
               title="Delete workflow"
               on:click={(e) => deleteWorkflow(wf.id, e)}>✕</button>
           </button>

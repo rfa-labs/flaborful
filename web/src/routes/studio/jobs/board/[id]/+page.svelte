@@ -78,26 +78,26 @@
   <button class="btn-ghost text-sm mb-6" on:click={() => goto('/studio/jobs/board')}>← Job board</button>
 
   {#if loading}
-    <div class="card p-8 animate-pulse"><div class="h-40 bg-gray-100 rounded"></div></div>
+    <div class="card p-8 animate-pulse"><div class="h-40 bg-sand-100 rounded"></div></div>
   {:else if error && !job}
     <div class="card p-8 text-center text-red-600">{error}</div>
   {:else if submitted}
     <div class="card p-12 text-center">
       <div class="text-6xl mb-4">✅</div>
       <h2 class="text-2xl font-bold mb-2">Application submitted</h2>
-      <p class="text-gray-500 mb-6">The company will review your agent and reach out if there's a fit. Your cover letter has been added to your agent's knowledge base.</p>
+      <p class="text-sand-500 mb-6">The company will review your agent and reach out if there's a fit. Your cover letter has been added to your agent's knowledge base.</p>
       <button class="btn-primary px-8" on:click={() => goto('/studio/jobs/board')}>Back to job board</button>
     </div>
   {:else if job}
     <!-- Job posting -->
     <div class="card p-6 mb-6">
       <h1 class="text-2xl font-bold mb-1">{job.title}</h1>
-      <div class="text-sm text-gray-400 mb-4">${(job.hourly_rate / 100).toFixed(0)}/hr · posted {new Date(job.created_at).toLocaleDateString()}</div>
+      <div class="text-sm text-sand-400 mb-4">${(job.hourly_rate / 100).toFixed(0)}/hr · posted {new Date(job.created_at).toLocaleDateString()}</div>
       <div class="prose prose-sm max-w-none">
-        <p class="text-gray-700 whitespace-pre-wrap">{job.description}</p>
+        <p class="text-sand-700 whitespace-pre-wrap">{job.description}</p>
         {#if job.requirements}
-          <h3 class="text-sm font-semibold text-gray-800 mt-4 mb-1">Requirements & tasks</h3>
-          <p class="text-gray-700 whitespace-pre-wrap">{job.requirements}</p>
+          <h3 class="text-sm font-semibold text-sand-800 mt-4 mb-1">Requirements & tasks</h3>
+          <p class="text-sand-700 whitespace-pre-wrap">{job.requirements}</p>
         {/if}
       </div>
     </div>
@@ -107,7 +107,7 @@
       <h2 class="text-lg font-semibold">Apply with your agent</h2>
 
       <div>
-        <label class="label" for="cover">Cover letter <span class="text-gray-400 font-normal">— why your agent is a fit</span></label>
+        <label class="label" for="cover">Cover letter <span class="text-sand-400 font-normal">— why your agent is a fit</span></label>
         <textarea class="input min-h-[120px] resize-y" id="cover" bind:value={coverLetter}
           placeholder="Introduce yourself and your agent, and explain why you're a strong fit for this role..."></textarea>
       </div>
@@ -119,15 +119,15 @@
       </div>
 
       <div>
-        <label class="label" for="video">Self-intro video URL <span class="text-gray-400 font-normal">(optional)</span></label>
+        <label class="label" for="video">Self-intro video URL <span class="text-sand-400 font-normal">(optional)</span></label>
         <input class="input" id="video" bind:value={videoUrl} placeholder="https://loom.com/... or YouTube link" />
-        <p class="text-xs text-gray-400 mt-1">A short video pitch the company can watch. Adds to your agent's knowledge base too.</p>
+        <p class="text-xs text-sand-400 mt-1">A short video pitch the company can watch. Adds to your agent's knowledge base too.</p>
       </div>
 
       <!-- Knowledge sharing (IP control) -->
       <div>
         <div class="label">Work samples to share</div>
-        <p class="text-xs text-gray-400 mb-2">
+        <p class="text-xs text-sand-400 mb-2">
           Choose which knowledge-base items the company may see. Only items you've marked <strong>shareable</strong> appear here — manage that in your
           <button class="text-brand-600 hover:underline" on:click={() => goto('/studio/knowledge')}>Knowledge vault</button>.
         </p>
@@ -138,16 +138,16 @@
         {:else}
           <div class="space-y-2 max-h-72 overflow-y-auto">
             {#each shareableChunks as c}
-              <label class="flex items-start gap-2 p-2 rounded-lg border cursor-pointer transition-colors {selectedChunkIds.has(c.id) ? 'border-brand-300 bg-brand-50' : 'border-gray-200 hover:border-gray-300'}">
+              <label class="flex items-start gap-2 p-2 rounded-lg border cursor-pointer transition-colors {selectedChunkIds.has(c.id) ? 'border-brand-300 bg-brand-50' : 'border-sand-200 hover:border-sand-300'}">
                 <input type="checkbox" class="mt-1" checked={selectedChunkIds.has(c.id)} on:change={() => toggleChunk(c.id)} />
                 <div class="min-w-0">
-                  <span class="text-[10px] uppercase tracking-wide text-gray-400 block">{c.source_type.replace(/_/g, ' ')}</span>
-                  <span class="text-sm text-gray-700 line-clamp-2">{c.content_preview}</span>
+                  <span class="text-[10px] uppercase tracking-wide text-sand-400 block">{c.source_type.replace(/_/g, ' ')}</span>
+                  <span class="text-sm text-sand-700 line-clamp-2">{c.content_preview}</span>
                 </div>
               </label>
             {/each}
           </div>
-          <p class="text-xs text-gray-400 mt-1">{selectedChunkIds.size} of {shareableChunks.length} selected</p>
+          <p class="text-xs text-sand-400 mt-1">{selectedChunkIds.size} of {shareableChunks.length} selected</p>
         {/if}
       </div>
 

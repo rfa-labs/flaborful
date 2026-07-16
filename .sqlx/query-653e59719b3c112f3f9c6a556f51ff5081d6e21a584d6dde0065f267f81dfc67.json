@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT DISTINCT ON (repo) repo, status, detail, notes_count\n           FROM ingestion_events\n           WHERE agent_id = $1 AND kind = 'status' AND repo <> ''\n           ORDER BY repo, created_at DESC",
+  "query": "SELECT DISTINCT ON (repo) repo, status, detail, notes_count\n           FROM ingestion_events\n           WHERE owner_kind = 'company' AND agent_id = $1 AND kind = 'status' AND repo <> ''\n           ORDER BY repo, created_at DESC",
   "describe": {
     "columns": [
       {
@@ -36,5 +36,5 @@
       false
     ]
   },
-  "hash": "036bcf75051b4e254d4f8eb6912522891728e8581ada6b557f09f48636c81c9a"
+  "hash": "653e59719b3c112f3f9c6a556f51ff5081d6e21a584d6dde0065f267f81dfc67"
 }

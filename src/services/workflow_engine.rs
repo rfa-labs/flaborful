@@ -2045,11 +2045,16 @@ impl<'a> WorkflowEngine<'a> {
             .filter(|s| !s.is_empty())
             .map(str::to_string);
 
+        // Compose the company repo vault (read-only) into this task. The overlay feeds both the
+        // blueprint (a "Company context" section) and the per-task token (so the agent's browse
+        // tools span its own vault + the company repo vault).
+        let overlays = self.build_vault_overlays(ctx, repo.as_deref()).await;
+
         // Context-engineering layer: assemble an Execution Blueprint from the professional's vault
-        // (style rules + architecture map + golden snippets, distilled in one LoRA call) and
-        // prepend it to the instructions. Gives the builder standing preferences up front so it
-        // only escalates to consult_principal for genuine ambiguity. Best-effort — a vault miss or
-        // distill failure just leaves the instructions as-authored.
+        // (style rules + architecture map + golden snippets, distilled in one LoRA call) plus the
+        // company repo context, and prepend it to the instructions. Gives the builder standing
+        // preferences + the codebase facts up front so it only escalates to consult_principal for
+        // genuine ambiguity. Best-effort — a vault miss or distill failure leaves it as-authored.
         match crate::services::blueprint::build_blueprint(
             self.db,
             self.qdrant,
@@ -2058,6 +2063,7 @@ impl<'a> WorkflowEngine<'a> {
             ctx.lora_name.as_deref(),
             &ctx.persona_prompt,
             &task_text,
+            &overlays,
         )
         .await
         {
@@ -2071,13 +2077,14 @@ impl<'a> WorkflowEngine<'a> {
             Err(e) => tracing::warn!("blueprint assembly failed for task {}: {}", ctx.task_id, e),
         }
 
-        // Mint a per-task taste token bound to the persona + LoRA.
+        // Mint a per-task taste token carrying the persona + LoRA + that overlay scope.
         let taste_token = crate::services::execution::taste::mint_token(
             self.db,
             ctx.task_id,
             ctx.agent_id,
             &ctx.persona_prompt,
             ctx.lora_name.as_deref(),
+            &overlays,
         )
         .await?;
 
@@ -2161,45 +2168,82 @@ impl<'a> WorkflowEngine<'a> {
         })
     }
 
-    /// Harvest the builder's workspace `MEMORY.md` into the professional's vault as a note, so
-    /// what the agent learned this task feeds future Execution Blueprints. Best-effort: only the
-    /// Sprite path has a live filesystem to read (Managed Agents runs in Anthropic's container),
-    /// and any failure is swallowed. Reuses the same sprite path as the gate/test nodes.
+    /// Harvest knowledge from the finished task into BOTH vaults — a fallback for when the agent
+    /// didn't call `record_experience`/`record_technical` itself. The builder's `MEMORY.md` becomes
+    /// a sanitized EXPERIENCE note in the professional's vault (feeding future Blueprints); the
+    /// implementation summary becomes a TECHNICAL note in the company's repo vault (the work
+    /// product the company owns). Best-effort: the MEMORY.md half needs a live sprite (Managed
+    /// Agents runs in Anthropic's container); any failure is swallowed.
     async fn harvest_memory_note(&self, ctx: &mut ExecutionContext) {
-        // Read MEMORY.md from the repo root on the task sprite, if there is one.
-        let out = match self
+        let repo = ctx
+            .vars
+            .get("repo")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+
+        // Professional side: MEMORY.md → experience note (sanitized by the agent as it writes it).
+        if let Ok(out) = self
             .sprite_exec(ctx.task_id, "cat MEMORY.md 2>/dev/null || true", 30)
             .await
         {
-            Ok(o) => o,
-            Err(_) => return, // no live sprite (e.g. Managed Agents) — nothing to harvest
-        };
-        let content = out.stdout.trim();
-        if content.is_empty() {
-            return;
+            let content = out.stdout.trim();
+            if !content.is_empty() {
+                let note = crate::services::vault::VaultNote {
+                    id: Uuid::new_v4(),
+                    agent_id: ctx.agent_id,
+                    owner_kind: "agent".into(),
+                    slug: format!("experience-{}", ctx.task_id.simple()),
+                    title: format!("Experience — task {}", &ctx.task_id.to_string()[..8]),
+                    body: content.to_string(),
+                    layer: crate::services::vault::NoteLayer::Note,
+                    source_type: crate::services::knowledge::KnowledgeSourceType::ApprovedOutput,
+                    visibility: crate::services::knowledge::ChunkVisibility::Private,
+                    domain: None,
+                    related: vec![],
+                    repo: repo.clone(),
+                    job_id: None,
+                };
+                if let Err(e) =
+                    crate::services::vault::upsert_note(self.db, self.qdrant, self.inference, note)
+                        .await
+                {
+                    tracing::debug!("experience harvest failed for task {}: {}", ctx.task_id, e);
+                }
+            }
         }
-        let note = crate::services::vault::VaultNote {
-            id: Uuid::new_v4(),
-            agent_id: ctx.agent_id,
-            slug: format!("memory-{}", ctx.task_id.simple()),
-            title: format!("Session memory — task {}", &ctx.task_id.to_string()[..8]),
-            body: content.to_string(),
-            layer: crate::services::vault::NoteLayer::Note,
-            source_type: crate::services::knowledge::KnowledgeSourceType::ApprovedOutput,
-            visibility: crate::services::knowledge::ChunkVisibility::Private,
-            domain: None,
-            related: vec![],
-            repo: ctx
+
+        // Company side: the implementation summary → a technical (tntmhpd) note in the company repo
+        // vault, when this task is composed with a company overlay. The company owns the work.
+        let overlays = self.build_vault_overlays(ctx, repo.as_deref()).await;
+        if let Some(ov) = overlays.first() {
+            if let Some(summary) = ctx
                 .vars
-                .get("repo")
+                .get("implementation_summary")
                 .and_then(|v| v.as_str())
-                .map(str::to_string),
-            job_id: None,
-        };
-        if let Err(e) =
-            crate::services::vault::upsert_note(self.db, self.qdrant, self.inference, note).await
-        {
-            tracing::debug!("MEMORY.md harvest failed for task {}: {}", ctx.task_id, e);
+                .filter(|s| !s.trim().is_empty())
+            {
+                let note = crate::services::vault::VaultNote {
+                    id: Uuid::new_v4(),
+                    agent_id: ov.owner.id(),
+                    owner_kind: ov.owner.kind_str().to_string(),
+                    slug: format!("work-{}", ctx.task_id.simple()),
+                    title: format!("Change — task {}", &ctx.task_id.to_string()[..8]),
+                    body: summary.to_string(),
+                    layer: crate::services::vault::NoteLayer::Feature,
+                    source_type: crate::services::knowledge::KnowledgeSourceType::ApprovedOutput,
+                    visibility: crate::services::knowledge::ChunkVisibility::Private,
+                    domain: None,
+                    related: vec![],
+                    repo: repo.clone(),
+                    job_id: None,
+                };
+                if let Err(e) =
+                    crate::services::vault::upsert_note(self.db, self.qdrant, self.inference, note)
+                        .await
+                {
+                    tracing::debug!("technical harvest failed for task {}: {}", ctx.task_id, e);
+                }
+            }
         }
     }
 
@@ -2356,12 +2400,14 @@ impl<'a> WorkflowEngine<'a> {
         let api_base_url =
             std::env::var("API_BASE_URL").unwrap_or_else(|_| "http://localhost:8080".into());
 
+        let overlays = self.build_vault_overlays(ctx, repo.as_deref()).await;
         let taste_token = crate::services::execution::taste::mint_token(
             self.db,
             ctx.task_id,
             ctx.agent_id,
             &ctx.persona_prompt,
             ctx.lora_name.as_deref(),
+            &overlays,
         )
         .await?;
 
@@ -2811,6 +2857,50 @@ impl<'a> WorkflowEngine<'a> {
         })
     }
 
+    // ── Vault composition ─────────────────────────────────────────────────────
+
+    /// Build the read-only vault overlay(s) for a hired task: the company that posted the job,
+    /// scoped to the task's target repo. The agent gets full read of that company repo vault for
+    /// the duration of the task (contractor-under-NDA). Returns empty if there's no company, no
+    /// target repo, or the company has no notes for that repo yet.
+    async fn build_vault_overlays(
+        &self,
+        ctx: &ExecutionContext,
+        repo: Option<&str>,
+    ) -> Vec<crate::services::vault::VaultOverlay> {
+        let Some(repo) = repo else {
+            return vec![];
+        };
+        // The job's owning company.
+        let company_id = match sqlx::query_scalar!(
+            "SELECT c.id FROM jobs j JOIN companies c ON c.id = j.company_id WHERE j.id = $1",
+            ctx.job_id
+        )
+        .fetch_optional(self.db)
+        .await
+        {
+            Ok(Some(id)) => id,
+            _ => return vec![],
+        };
+        // Only attach if the company vault actually has notes for this repo.
+        let has = sqlx::query_scalar!(
+            "SELECT EXISTS(SELECT 1 FROM vault_notes WHERE owner_kind = 'company' AND agent_id = $1 AND repo = $2)",
+            company_id,
+            repo
+        )
+        .fetch_one(self.db)
+        .await
+        .unwrap_or(Some(false))
+        .unwrap_or(false);
+        if !has {
+            return vec![];
+        }
+        vec![crate::services::vault::VaultOverlay {
+            owner: crate::services::vault::VaultOwner::Company(company_id),
+            repos: vec![repo.to_string()],
+        }]
+    }
+
     // ── RAG helpers ───────────────────────────────────────────────────────────
 
     async fn retrieve_rag_context(&self, ctx: &ExecutionContext, query: &str) -> Result<String> {
@@ -2820,7 +2910,7 @@ impl<'a> WorkflowEngine<'a> {
             self.db,
             self.qdrant,
             self.inference,
-            ctx.agent_id,
+            crate::services::vault::VaultOwner::Agent(ctx.agent_id),
             query,
             &crate::services::vault::RetrievalFilter::default(),
             5,

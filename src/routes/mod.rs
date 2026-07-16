@@ -8,6 +8,7 @@ mod audit;
 mod auth;
 mod billing;
 mod companies;
+mod company_vault;
 mod dashboard;
 mod jobs;
 mod knowledge;
@@ -30,7 +31,7 @@ pub fn router() -> Router<AppState> {
         .nest("/professions", professions::router())
         .nest("/professionals", professionals::router())
         .nest("/agents", agents::router())
-        .nest("/companies", companies::router())
+        .nest("/companies", companies::router().merge(company_vault::router()))
         .nest("/jobs", jobs::router())
         .nest("/applications", applications::router())
         .nest("/node-chat", node_chat::router())

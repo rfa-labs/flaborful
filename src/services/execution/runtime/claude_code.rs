@@ -51,7 +51,7 @@ impl AgentRuntime for ClaudeCodeRuntime {
             "cd {repo} && ANTHROPIC_MODEL=claude-opus-4-8 claude -p {prompt} \
              --append-system-prompt {persona} \
              --permission-mode acceptEdits --dangerously-skip-permissions \
-             --allowedTools 'Bash,Edit,Write,Read,Glob,Grep,mcp__principal__consult_principal,mcp__vault__upsert_note,mcp__vault__list_vault,mcp__vault__read_note,mcp__vault__search_vault,mcp__vault__follow_links' \
+             --allowedTools 'Bash,Edit,Write,Read,Glob,Grep,mcp__principal__consult_principal,mcp__vault__upsert_note,mcp__vault__list_vault,mcp__vault__read_note,mcp__vault__search_vault,mcp__vault__follow_links,mcp__vault__record_experience,mcp__vault__record_technical' \
              2>&1",
             repo = repo_dir,
             prompt = prompt,
@@ -101,6 +101,14 @@ fn build_prompt(brief: &TaskBrief) -> String {
          - Keep a running `MEMORY.md` at the repo root: as you work, append decisions you made, \
          corrections from the principal, and any \"the principal prefers X\" you learn. It's \
          harvested into their knowledge vault to inform future tasks.\n\
+         - When the work is done, capture knowledge on BOTH sides, the way a human contractor would: \
+         the company owns the work product, but you (the professional) own the experience. Call \
+         `record_technical` to write the concrete change into the COMPANY's vault (files/symbols \
+         touched, decisions in context of their codebase — proprietary detail is fine). Call \
+         `record_experience` to write the transferable lesson into YOUR OWN vault (what you built, \
+         the architecture/patterns you used and learned) — with NO company name, secrets, or \
+         proprietary identifiers, so it's yours to talk about in a future interview. For each, \
+         `search_vault` first and set `related` so the new note connects into the existing graph.\n\
          - Make the change by editing files in this repo. Do NOT run `git commit`, `git push`, or \
          open a pull request — the platform commits, pushes, and opens the PR for you after a human \
          reviews your work. Just leave your changes in the working tree.\n\

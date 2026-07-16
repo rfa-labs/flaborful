@@ -49,7 +49,7 @@
   <div class="flex flex-col md:flex-row md:items-end gap-4 mb-8">
     <div class="flex-1">
       <h1 class="text-3xl font-bold mb-1">Agent Marketplace</h1>
-      <p class="text-gray-500">Hire a professional's AI agent for your back-office work.</p>
+      <p class="text-sand-500">Hire a professional's AI agent for your back-office work.</p>
     </div>
     <input
       class="input max-w-xs"
@@ -62,7 +62,7 @@
   <div class="flex gap-3 mb-8 flex-wrap">
     {#each ['', 'Software Engineer', 'Designer', 'Accountant'] as prof}
       <button
-        class="px-3 py-1.5 rounded-full text-sm font-medium border transition-colors {filterProfession === prof ? 'bg-brand-600 text-white border-brand-600' : 'bg-white text-gray-600 border-gray-300 hover:border-brand-400'}"
+        class="px-3 py-1.5 rounded-full text-sm font-medium border transition-colors {filterProfession === prof ? 'bg-brand-600 text-white border-brand-600' : 'bg-white text-sand-600 border-sand-300 hover:border-brand-400'}"
         on:click={() => { filterProfession = prof; load(); }}>
         {prof || 'All professions'}
       </button>
@@ -74,22 +74,38 @@
       {#each Array(6) as _}
         <div class="card p-5 animate-pulse">
           <div class="flex items-center gap-3 mb-4">
-            <div class="w-12 h-12 rounded-full bg-gray-200"></div>
+            <div class="w-12 h-12 rounded-full bg-sand-200"></div>
             <div class="flex-1">
-              <div class="h-4 bg-gray-200 rounded w-3/4 mb-2"></div>
-              <div class="h-3 bg-gray-100 rounded w-1/2"></div>
+              <div class="h-4 bg-sand-200 rounded w-3/4 mb-2"></div>
+              <div class="h-3 bg-sand-100 rounded w-1/2"></div>
             </div>
           </div>
-          <div class="h-3 bg-gray-100 rounded w-full mb-2"></div>
-          <div class="h-3 bg-gray-100 rounded w-4/5"></div>
+          <div class="h-3 bg-sand-100 rounded w-full mb-2"></div>
+          <div class="h-3 bg-sand-100 rounded w-4/5"></div>
         </div>
       {/each}
     </div>
   {:else if error}
     <div class="card p-8 text-center text-red-600">{error}</div>
+  {:else if listings.length === 0}
+    <!-- No inventory at all — the pre-launch reality. Turn the empty grid into the recruiting
+         moment the landing page sets up, rather than a dead "No agents found". -->
+    <div class="card p-12 text-center max-w-2xl mx-auto">
+      <div class="text-4xl mb-4">🌱</div>
+      <h2 class="text-2xl font-bold mb-3">The marketplace is still filling up.</h2>
+      <p class="text-sand-500 leading-relaxed mb-6">
+        We’re building the professional side first — one verified agent at a time. No fake
+        listings to pad the page. When there are enough of us, the doors open and the demand
+        follows. The earlier you build yours, the higher it ranks when they do.
+      </p>
+      <button class="btn-primary" on:click={() => goto('/auth/register?as=professional')}>
+        Claim your agent
+        <span aria-hidden="true">→</span>
+      </button>
+    </div>
   {:else if filtered.length === 0}
-    <div class="card p-12 text-center text-gray-400">
-      No agents found. Try adjusting your filters.
+    <div class="card p-12 text-center text-sand-400">
+      No agents match that search. Try clearing your filters.
     </div>
   {:else}
     <div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-5">
@@ -103,16 +119,16 @@
               {agent.professional_name[0]}
             </div>
             <div class="flex-1 min-w-0">
-              <div class="font-semibold text-gray-900 truncate">{agent.professional_name}</div>
-              <div class="text-sm text-gray-500">{agent.profession_name}</div>
+              <div class="font-semibold text-sand-900 truncate">{agent.professional_name}</div>
+              <div class="text-sm text-sand-500">{agent.profession_name}</div>
             </div>
             <div class="text-right shrink-0">
-              <div class="font-semibold text-gray-900">{formatRate(agent.hourly_rate)}</div>
+              <div class="font-semibold text-sand-900">{formatRate(agent.hourly_rate)}</div>
             </div>
           </div>
 
           {#if agent.bio}
-            <p class="text-sm text-gray-600 mb-3 line-clamp-2">{agent.bio}</p>
+            <p class="text-sm text-sand-600 mb-3 line-clamp-2">{agent.bio}</p>
           {/if}
 
           <!-- Aspects -->
@@ -126,7 +142,7 @@
           </div>
 
           <!-- Stats -->
-          <div class="flex gap-4 text-xs text-gray-500 pt-3 border-t border-gray-100">
+          <div class="flex gap-4 text-xs text-sand-500 pt-3 border-t border-sand-100">
             <span>{agent.completed_jobs} jobs</span>
             <span>{agent.approved_outputs} outputs</span>
           </div>

@@ -47,7 +47,7 @@
     {:else}
       <div class="card p-8">
         <div class="text-brand-600 text-4xl mb-4 animate-pulse">↻</div>
-        <p class="text-gray-600 text-sm">Connecting your GitHub account...</p>
+        <p class="text-sand-600 text-sm">Connecting your GitHub account...</p>
       </div>
     {/if}
   </div>

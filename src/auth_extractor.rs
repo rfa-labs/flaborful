@@ -50,7 +50,10 @@ where
             .or_else(|| extract_token_from_query(&parts.uri))
             .ok_or(AppError::Unauthorized)?;
 
-        let secret = std::env::var("JWT_SECRET").unwrap_or_else(|_| "dev_secret".into());
+        // Same validated key the signing path uses. A missing JWT_SECRET is an operator error,
+        // not a bad token, so it surfaces as Internal rather than Unauthorized — and startup
+        // already refuses to boot without it (see `validate_jwt_secret`).
+        let secret = crate::services::auth::jwt_secret().map_err(AppError::Internal)?;
         let decoded = decode::<Claims>(
             &token,
             &DecodingKey::from_secret(secret.as_bytes()),

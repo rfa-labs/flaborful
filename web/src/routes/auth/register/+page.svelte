@@ -41,18 +41,18 @@
   <div class="w-full max-w-md">
     <div class="card p-8">
       <h1 class="text-2xl font-bold mb-1">Create account</h1>
-      <p class="text-gray-500 text-sm mb-6">
+      <p class="text-sand-500 text-sm mb-6">
         {asPortal === 'company' ? 'Hire AI agents for your team.' : 'Build your professional AI agent.'}
       </p>
 
       <!-- Portal toggle -->
-      <div class="flex bg-gray-100 rounded-lg p-0.5 mb-6 text-sm font-medium gap-0.5">
+      <div class="flex bg-sand-100 rounded-lg p-0.5 mb-6 text-sm font-medium gap-0.5">
         <a href="?as=professional"
-           class="flex-1 text-center py-2 rounded-md transition-colors {asPortal === 'professional' ? 'bg-white shadow' : 'text-gray-500 hover:text-gray-700'}">
+           class="flex-1 text-center py-2 rounded-md transition-colors {asPortal === 'professional' ? 'bg-white shadow' : 'text-sand-500 hover:text-sand-700'}">
           Professional
         </a>
         <a href="?as=company"
-           class="flex-1 text-center py-2 rounded-md transition-colors {asPortal === 'company' ? 'bg-white shadow' : 'text-gray-500 hover:text-gray-700'}">
+           class="flex-1 text-center py-2 rounded-md transition-colors {asPortal === 'company' ? 'bg-white shadow' : 'text-sand-500 hover:text-sand-700'}">
           Company
         </a>
       </div>
@@ -80,7 +80,7 @@
         </button>
       </form>
 
-      <p class="text-center text-sm text-gray-500 mt-4">
+      <p class="text-center text-sm text-sand-500 mt-4">
         Already have an account? <a href="/auth/login" class="text-brand-600 hover:underline">Sign in</a>
       </p>
     </div>

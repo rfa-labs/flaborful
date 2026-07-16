@@ -51,7 +51,7 @@
   <div class="w-full max-w-sm">
     <div class="card p-8">
       <h1 class="text-2xl font-bold mb-1">Sign in</h1>
-      <p class="text-gray-500 text-sm mb-6">Welcome back.</p>
+      <p class="text-sand-500 text-sm mb-6">Welcome back.</p>
 
       <form on:submit|preventDefault={submit} class="space-y-4">
         <div>
@@ -72,7 +72,7 @@
         </button>
       </form>
 
-      <p class="text-center text-sm text-gray-500 mt-4">
+      <p class="text-center text-sm text-sand-500 mt-4">
         No account? <a href="/auth/register" class="text-brand-600 hover:underline">Create one</a>
       </p>
     </div>

@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO taste_tokens (token, task_id, owner_kind, agent_id, persona_prompt, cf_finetune_id, overlays)\n           VALUES ($1, $2, 'agent', $3, $4, $5, $6)\n           ON CONFLICT (task_id) DO UPDATE SET\n             token = EXCLUDED.token, persona_prompt = EXCLUDED.persona_prompt,\n             cf_finetune_id = EXCLUDED.cf_finetune_id, overlays = EXCLUDED.overlays,\n             created_at = NOW()",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Text",
+        "Jsonb"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f6b582bcfd312fbc1661eb8b10a995522d32231f11a21dca4be13ea81f1bc047"
+}

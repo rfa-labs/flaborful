@@ -151,17 +151,17 @@
   <button class="btn-ghost text-sm mb-6" on:click={() => goto('/studio')}>← Studio</button>
 
   <h1 class="text-2xl font-bold mb-1">Agent management</h1>
-  <p class="text-gray-500 text-sm mb-6">Retrain your agent from selected knowledge, or rebuild it from scratch.</p>
+  <p class="text-sand-500 text-sm mb-6">Retrain your agent from selected knowledge, or rebuild it from scratch.</p>
 
   {#if loading}
-    <div class="card p-8 animate-pulse"><div class="h-32 bg-gray-100 rounded"></div></div>
+    <div class="card p-8 animate-pulse"><div class="h-32 bg-sand-100 rounded"></div></div>
   {:else if error && !agent}
     <div class="card p-8 text-center text-red-600">{error}</div>
   {:else if agent}
     <!-- Status -->
     <div class="card p-5 mb-6 flex items-center justify-between">
       <div>
-        <div class="text-xs text-gray-500 uppercase tracking-wide">Agent status</div>
+        <div class="text-xs text-sand-500 uppercase tracking-wide">Agent status</div>
         <div class="text-lg font-semibold capitalize">{agent.status}</div>
       </div>
       {#if agent.status === 'training'}
@@ -174,7 +174,7 @@
     <!-- Execution backend / runtime -->
     <div class="card p-5 mb-6">
       <h2 class="font-semibold mb-1">Where your agent does work</h2>
-      <p class="text-xs text-gray-400 mb-4">For coding jobs, your agent runs on a real machine. Pick where it runs and which coding tool drives it. (A workflow can override this per task.)</p>
+      <p class="text-xs text-sand-400 mb-4">For coding jobs, your agent runs on a real machine. Pick where it runs and which coding tool drives it. (A workflow can override this per task.)</p>
 
       <div class="space-y-3">
         <div>
@@ -193,7 +193,7 @@
               <option value="codex">Codex</option>
               <option value="custom">Custom</option>
             </select>
-            <p class="text-xs text-gray-400 mt-1">We install your chosen tool on the sprite and point it at your style model.</p>
+            <p class="text-xs text-sand-400 mt-1">We install your chosen tool on the sprite and point it at your style model.</p>
           </div>
 
           {#if runtime === 'custom'}
@@ -201,7 +201,7 @@
               <label class="label text-xs" for="runtime-spec">Custom runtime spec (JSON)</label>
               <textarea class="input text-sm font-mono h-40" id="runtime-spec"
                 bind:value={runtimeSpecText} placeholder={CUSTOM_SPEC_PLACEHOLDER}></textarea>
-              <p class="text-xs text-gray-400 mt-1">
+              <p class="text-xs text-sand-400 mt-1">
                 Templates: <span class="font-mono">{'{taste_url}'}</span> in the MCP config;
                 <span class="font-mono">{'{repo_dir}'}</span>, <span class="font-mono">{'{task}'}</span>,
                 <span class="font-mono">{'{persona}'}</span> in the invoke command.
@@ -209,7 +209,7 @@
             </div>
           {/if}
         {:else}
-          <p class="text-xs text-gray-400">Managed runs Claude Code on Anthropic's hosted container; your repo token stays off the machine.</p>
+          <p class="text-xs text-sand-400">Managed runs Claude Code on Anthropic's hosted container; your repo token stays off the machine.</p>
         {/if}
       </div>
 
@@ -223,14 +223,14 @@
     <!-- Retraining -->
     <div class="card p-5 mb-6">
       <h2 class="font-semibold mb-1">Retrain from knowledge base</h2>
-      <p class="text-xs text-gray-400 mb-4">Choose which parts of your knowledge base to train on. Your full KB is preserved either way.</p>
+      <p class="text-xs text-sand-400 mb-4">Choose which parts of your knowledge base to train on. Your full KB is preserved either way.</p>
 
       <div class="space-y-2 mb-4">
         {#each typeCounts as t}
           <label class="flex items-center gap-2.5 text-sm cursor-pointer">
             <input type="checkbox" checked={selectedTypes.has(t.key)} on:change={() => toggleType(t.key)} />
             <span class="flex-1">{t.label}</span>
-            <span class="text-xs text-gray-400">{t.count} item{t.count === 1 ? '' : 's'}</span>
+            <span class="text-xs text-sand-400">{t.count} item{t.count === 1 ? '' : 's'}</span>
           </label>
         {/each}
       </div>
@@ -252,13 +252,13 @@
       </div>
 
       {#if preview.length > 0}
-        <div class="mt-4 border-t border-gray-100 pt-4">
-          <div class="text-xs font-semibold text-gray-500 mb-2">{preview.length} training example{preview.length === 1 ? '' : 's'} selected</div>
+        <div class="mt-4 border-t border-sand-100 pt-4">
+          <div class="text-xs font-semibold text-sand-500 mb-2">{preview.length} training example{preview.length === 1 ? '' : 's'} selected</div>
           <div class="space-y-1.5 max-h-72 overflow-y-auto">
             {#each preview as p}
-              <div class="bg-gray-50 rounded p-2 text-xs">
-                <span class="text-[10px] uppercase tracking-wide text-gray-400">{p.source_type.replace(/_/g, ' ')}</span>
-                <div class="text-gray-700 line-clamp-2">{p.content_preview}</div>
+              <div class="bg-sand-50 rounded p-2 text-xs">
+                <span class="text-[10px] uppercase tracking-wide text-sand-400">{p.source_type.replace(/_/g, ' ')}</span>
+                <div class="text-sand-700 line-clamp-2">{p.content_preview}</div>
               </div>
             {/each}
           </div>

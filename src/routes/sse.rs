@@ -41,7 +41,7 @@ async fn ingestion_feed(
             let rows = match sqlx::query!(
                 r#"SELECT repo, kind, status, detail, notes_count, created_at
                    FROM ingestion_events
-                   WHERE agent_id = $1
+                   WHERE owner_kind = 'agent' AND agent_id = $1
                      AND ($2::timestamptz IS NULL OR created_at > $2)
                    ORDER BY created_at ASC"#,
                 agent_id,

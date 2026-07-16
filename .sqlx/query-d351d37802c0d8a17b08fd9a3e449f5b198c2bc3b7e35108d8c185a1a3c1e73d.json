@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO taste_tokens (token, task_id, owner_kind, agent_id, persona_prompt, cf_finetune_id)\n           VALUES ($1, NULL, 'agent', $2, $3, $4)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d351d37802c0d8a17b08fd9a3e449f5b198c2bc3b7e35108d8c185a1a3c1e73d"
+}

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT COUNT(*) FROM vault_notes WHERE agent_id = $1",
+  "query": "SELECT COUNT(*) FROM vault_notes WHERE owner_kind = 'company' AND agent_id = $1 AND repo IS NOT NULL",
   "describe": {
     "columns": [
       {
@@ -18,5 +18,5 @@
       null
     ]
   },
-  "hash": "847158929a6162244ee594ee7b48c70e19923967bfde6788dc1b7f50f3206f41"
+  "hash": "86c0dedcd206951866ec1f3a788b43dbdcb0b4a32ff5d4de5c4f57e060112790"
 }

@@ -112,18 +112,18 @@
   <button class="btn-ghost text-sm mb-6" on:click={() => goto('/studio')}>← Studio</button>
 
   <h1 class="text-2xl font-bold mb-1">Workflow executions</h1>
-  <p class="text-gray-500 text-sm mb-6">Live runs of your agent's workflows. Open one to watch its progress and steer the work.</p>
+  <p class="text-sand-500 text-sm mb-6">Live runs of your agent's workflows. Open one to watch its progress and steer the work.</p>
 
   {#if loading}
     <div class="space-y-3">
       {#each Array(3) as _}
-        <div class="card p-5 animate-pulse"><div class="h-12 bg-gray-100 rounded"></div></div>
+        <div class="card p-5 animate-pulse"><div class="h-12 bg-sand-100 rounded"></div></div>
       {/each}
     </div>
   {:else if error}
     <div class="card p-8 text-center text-red-600">{error}</div>
   {:else if tasks.length === 0}
-    <div class="card p-12 text-center text-gray-400">
+    <div class="card p-12 text-center text-sand-400">
       <div class="text-4xl mb-3">⚙️</div>
       No active executions. Tasks your agent is running will appear here.
     </div>
@@ -142,7 +142,7 @@
             <div class="flex items-start gap-4">
               <div class="flex-1 min-w-0">
                 <div class="font-medium text-sm">{taskTitle(task)}</div>
-                <div class="text-xs text-gray-400 mt-0.5">
+                <div class="text-xs text-sand-400 mt-0.5">
                   created {timeAgo(task.created_at)}{repoOf(task) ? ` · ${repoOf(task)}` : ''}
                   · {task.status === 'failed' ? 'last run failed' : 'ready to run'}
                 </div>
@@ -157,7 +157,7 @@
                     on:click={() => runAgain(task.id)}>
                     {assigning[task.id] ? 'Starting…' : '▶ Run again'}
                   </button>
-                  <span class="text-xs text-gray-400">or switch workflow:</span>
+                  <span class="text-xs text-sand-400">or switch workflow:</span>
                   <select class="input text-sm py-1" bind:value={pickWorkflow[task.id]}>
                     <option value="">— Keep current —</option>
                     {#each workflows as wf}
@@ -178,7 +178,7 @@
             <div class="flex items-start gap-4">
               <div class="flex-1 min-w-0">
                 <div class="font-medium text-sm">{taskTitle(task)}</div>
-                <div class="text-xs text-gray-400 mt-0.5">
+                <div class="text-xs text-sand-400 mt-0.5">
                   created {timeAgo(task.created_at)}{repoOf(task) ? ` · ${repoOf(task)}` : ''}
                 </div>
                 <div class="mt-3 flex items-center gap-2 flex-wrap">
@@ -193,13 +193,13 @@
                     on:click={() => assignWorkflow(task.id)}>
                     {assigning[task.id] ? 'Starting…' : 'Assign & run'}
                   </button>
-                  <span class="text-xs text-gray-400">or</span>
+                  <span class="text-xs text-sand-400">or</span>
                   <button class="btn-ghost text-sm shrink-0" on:click={() => createWorkflowForTask(task.id)}>
                     + Build a new workflow for this task
                   </button>
                 </div>
                 {#if workflows.length === 0}
-                  <p class="text-xs text-gray-400 mt-2">
+                  <p class="text-xs text-sand-400 mt-2">
                     No workflows yet — build a new one for this task above.
                   </p>
                 {/if}
@@ -215,7 +215,7 @@
             <div class="flex items-center gap-4">
               <div class="flex-1 min-w-0">
                 <div class="font-medium text-sm truncate">{taskTitle(task)}</div>
-                <div class="text-xs text-gray-400 mt-0.5">
+                <div class="text-xs text-sand-400 mt-0.5">
                   started {timeAgo(task.created_at)}
                   {#if task.current_node_id}· at node <span class="font-mono">{task.current_node_id}</span>{/if}
                 </div>

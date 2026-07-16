@@ -53,17 +53,17 @@
 
 {#if typeof value === 'string'}
   <!-- Plain string output (e.g. a delivered deliverable / formatted text). -->
-  <div class="prose prose-sm max-w-none bg-gray-50 rounded p-2 max-h-72 overflow-y-auto">{@html md(stringValue)}</div>
+  <div class="prose prose-sm max-w-none bg-sand-50 rounded p-2 max-h-72 overflow-y-auto">{@html md(stringValue)}</div>
 
 {:else if isTestGate && obj}
   <!-- Test Gate result. -->
-  <div class="bg-gray-50 rounded p-2 space-y-1">
+  <div class="bg-sand-50 rounded p-2 space-y-1">
     {#if gatePassed}
       <div class="text-sm font-semibold text-green-700">✓ Tests passed</div>
     {:else}
       <div class="text-sm font-semibold text-red-700">✗ Tests failed</div>
     {/if}
-    <div class="text-xs text-gray-500">
+    <div class="text-xs text-sand-500">
       check: <span class="font-mono">{obj.check}</span> · attempt {obj.attempts}
     </div>
   </div>
@@ -77,27 +77,27 @@
 
     {#if summaryText}
       <div>
-        <div class="text-[11px] font-semibold text-gray-500 uppercase tracking-wide mb-1">Summary</div>
+        <div class="text-[11px] font-semibold text-sand-500 uppercase tracking-wide mb-1">Summary</div>
         <div class="prose prose-sm max-w-none">{@html md(summaryText)}</div>
       </div>
     {/if}
 
     {#if filesChanged.length}
       <div>
-        <div class="text-[11px] font-semibold text-gray-500 uppercase tracking-wide mb-1">Files changed ({filesChanged.length})</div>
-        <ul class="text-xs font-mono text-gray-600 space-y-0.5">
+        <div class="text-[11px] font-semibold text-sand-500 uppercase tracking-wide mb-1">Files changed ({filesChanged.length})</div>
+        <ul class="text-xs font-mono text-sand-600 space-y-0.5">
           {#each filesChanged as f}<li>{f}</li>{/each}
         </ul>
       </div>
     {/if}
 
     <div>
-      <div class="text-[11px] font-semibold text-gray-500 uppercase tracking-wide mb-1">Diff</div>
+      <div class="text-[11px] font-semibold text-sand-500 uppercase tracking-wide mb-1">Diff</div>
       <DiffView diff={diffText} />
     </div>
 
     {#if testSummary}
-      <div class="text-xs text-gray-600"><span class="font-semibold">Tests:</span> {testSummary}</div>
+      <div class="text-xs text-sand-600"><span class="font-semibold">Tests:</span> {testSummary}</div>
     {/if}
 
     {#if transcript}
@@ -106,7 +106,7 @@
           {showTranscript ? 'Hide' : 'Show'} agent transcript
         </button>
         {#if showTranscript}
-          <pre class="mt-1 bg-gray-50 rounded p-2 text-[11px] whitespace-pre-wrap break-words max-h-72 overflow-y-auto">{transcript}</pre>
+          <pre class="mt-1 bg-sand-50 rounded p-2 text-[11px] whitespace-pre-wrap break-words max-h-72 overflow-y-auto">{transcript}</pre>
         {/if}
       </div>
     {/if}
@@ -114,16 +114,16 @@
 
 {:else if resourceKind && obj}
   <!-- A side-effecting write node: show status + a link to the real artifact. -->
-  <div class="bg-gray-50 rounded p-2 space-y-1">
-    <div class="text-sm text-gray-700">
+  <div class="bg-sand-50 rounded p-2 space-y-1">
+    <div class="text-sm text-sand-700">
       <span class="font-semibold capitalize">{status || 'done'}</span>
-      <span class="text-gray-400">· {resourceKind.replace(/_/g, ' ')}</span>
+      <span class="text-sand-400">· {resourceKind.replace(/_/g, ' ')}</span>
     </div>
     {#if artifactUrl}
       <a class="text-sm text-brand-600 hover:underline break-all" href={artifactUrl} target="_blank" rel="noopener">{artifactUrl}</a>
     {/if}
     {#if resourceId}
-      <div class="text-[11px] text-gray-400 font-mono break-all">{resourceId}</div>
+      <div class="text-[11px] text-sand-400 font-mono break-all">{resourceId}</div>
     {/if}
   </div>
 
@@ -133,8 +133,8 @@
     {showRaw ? 'Hide' : 'Show'} raw
   </button>
   {#if showRaw || (typeof value !== 'object')}
-    <pre class="bg-gray-50 rounded p-2 text-xs whitespace-pre-wrap break-words max-h-72 overflow-y-auto">{pretty(value)}</pre>
+    <pre class="bg-sand-50 rounded p-2 text-xs whitespace-pre-wrap break-words max-h-72 overflow-y-auto">{pretty(value)}</pre>
   {:else}
-    <pre class="bg-gray-50 rounded p-2 text-xs whitespace-pre-wrap break-words max-h-48 overflow-y-auto">{pretty(value)}</pre>
+    <pre class="bg-sand-50 rounded p-2 text-xs whitespace-pre-wrap break-words max-h-48 overflow-y-auto">{pretty(value)}</pre>
   {/if}
 {/if}

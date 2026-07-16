@@ -70,8 +70,32 @@ pub async fn login(db: &PgPool, req: LoginRequest) -> AppResult<AuthResponse> {
     })
 }
 
+/// The JWT signing key. Like [`crate::services::crypto`]'s `CREDENTIAL_KEY`, there is **no**
+/// default: a missing `JWT_SECRET` used to fall back to the literal `"dev_secret"` in both the
+/// signing and verifying paths, which meant a deploy that forgot the var would sign and accept
+/// every session token with a publicly-known key — anyone could forge a JWT for any user. Read
+/// once per process; rotating the secret requires a restart (and invalidates live sessions).
+pub fn jwt_secret() -> Result<&'static str, anyhow::Error> {
+    use std::sync::OnceLock;
+    static SECRET: OnceLock<Option<String>> = OnceLock::new();
+    SECRET
+        .get_or_init(|| std::env::var("JWT_SECRET").ok().filter(|s| !s.is_empty()))
+        .as_deref()
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "JWT_SECRET must be set to a non-empty value (generate one with `openssl rand -base64 32`)"
+            )
+        })
+}
+
+/// Validate that `JWT_SECRET` is present without minting a token. Called at startup so a
+/// misconfigured deploy fails immediately rather than on the first login.
+pub fn validate_jwt_secret() -> Result<(), anyhow::Error> {
+    jwt_secret().map(|_| ())
+}
+
 fn make_token(user: &User) -> AppResult<String> {
-    let secret = std::env::var("JWT_SECRET").unwrap_or_else(|_| "dev_secret".into());
+    let secret = jwt_secret().map_err(AppError::Internal)?;
     let exp = (Utc::now() + chrono::Duration::days(30)).timestamp() as usize;
     let claims = Claims {
         sub: user.id.to_string(),

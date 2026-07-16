@@ -101,12 +101,12 @@
   }
 
   const NODE_TYPES = [
-    { type: 'trigger',            label: 'Trigger',         color: '#6366f1', group: 'Control' },
-    { type: 'llm_reasoning',      label: 'LLM Reasoning',   color: '#8b5cf6', group: 'AI' },
+    { type: 'trigger',            label: 'Trigger',         color: '#7c4dff', group: 'Control' },
+    { type: 'llm_reasoning',      label: 'LLM Reasoning',   color: '#6a34ff', group: 'AI' },
     { type: 'human_gate',         label: 'Human Gate',      color: '#f59e0b', group: 'Control' },
-    { type: 'conditional_branch', label: 'Branch',          color: '#6366f1', group: 'Control' },
+    { type: 'conditional_branch', label: 'Branch',          color: '#7c4dff', group: 'Control' },
     { type: 'output',             label: 'Output',          color: '#10b981', group: 'Control' },
-    { type: 'formatter',          label: 'Formatter',       color: '#6366f1', group: 'Utility' },
+    { type: 'formatter',          label: 'Formatter',       color: '#7c4dff', group: 'Utility' },
     { type: 'github',             label: 'GitHub',          color: '#1f2937', group: 'Tools' },
     { type: 'diff_analyzer',      label: 'Diff Analyzer',   color: '#1f2937', group: 'Tools' },
     { type: 'stack_trace_parser', label: 'Stack Trace',     color: '#1f2937', group: 'Tools' },
@@ -325,9 +325,9 @@
 
 <div class="h-[calc(100vh-56px)] flex flex-col">
   <!-- Toolbar -->
-  <div class="bg-white border-b border-gray-200 px-4 py-2 flex items-center gap-3 z-10">
+  <div class="bg-white border-b border-sand-200 px-4 py-2 flex items-center gap-3 z-10">
     <button class="btn-ghost text-sm" on:click={() => goto('/studio/workflows')}>← Workflows</button>
-    <div class="h-4 w-px bg-gray-200"></div>
+    <div class="h-4 w-px bg-sand-200"></div>
 
     {#if workflow}
       <input
@@ -365,15 +365,15 @@
   <div class="flex-1 flex overflow-hidden relative">
     <!-- Node type panel -->
     {#if showAddPanel}
-      <div class="absolute left-4 top-4 z-20 bg-white rounded-xl border border-gray-200 shadow-lg w-56 py-2">
-        <div class="px-3 py-1 text-xs font-semibold text-gray-400 uppercase tracking-wide">Add node</div>
+      <div class="absolute left-4 top-4 z-20 bg-white rounded-xl border border-sand-200 shadow-lg w-56 py-2">
+        <div class="px-3 py-1 text-xs font-semibold text-sand-400 uppercase tracking-wide">Add node</div>
         {#each ['Control', 'AI', 'Software Engineering', 'Tools', 'Utility'] as group}
           {@const items = NODE_TYPES.filter(n => n.group === group)}
           {#if items.length}
-            <div class="px-3 py-1 mt-1 text-xs font-medium text-gray-500">{group}</div>
+            <div class="px-3 py-1 mt-1 text-xs font-medium text-sand-500">{group}</div>
             {#each items as nt}
               <button
-                class="w-full text-left px-3 py-2 text-sm hover:bg-gray-50 flex items-center gap-2"
+                class="w-full text-left px-3 py-2 text-sm hover:bg-sand-50 flex items-center gap-2"
                 on:click={() => addNode(nt.type)}>
                 <span class="w-2 h-2 rounded-full shrink-0" style="background:{nt.color}"></span>
                 {nt.label}
@@ -386,10 +386,10 @@
 
     <!-- Config panel -->
     {#if selectedNode}
-      <div class="absolute right-4 top-4 z-20 bg-white rounded-xl border border-gray-200 shadow-lg w-72 max-h-[80vh] overflow-y-auto">
-        <div class="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
+      <div class="absolute right-4 top-4 z-20 bg-white rounded-xl border border-sand-200 shadow-lg w-72 max-h-[80vh] overflow-y-auto">
+        <div class="px-4 py-3 border-b border-sand-100 flex items-center justify-between">
           <span class="font-semibold text-sm">{selectedNode.label}</span>
-          <button class="text-gray-400 hover:text-gray-600 text-lg leading-none" on:click={() => selectedNode = null}>×</button>
+          <button class="text-sand-400 hover:text-sand-600 text-lg leading-none" on:click={() => selectedNode = null}>×</button>
         </div>
         <div class="p-4 space-y-3">
           <div>
@@ -400,7 +400,7 @@
           </div>
 
           {#if canvasKind(selectedNode) === 'google_docs'}
-            <p class="text-xs text-gray-500 bg-blue-50 border border-blue-100 rounded-lg p-2.5 leading-relaxed">
+            <p class="text-xs text-sand-500 bg-blue-50 border border-blue-100 rounded-lg p-2.5 leading-relaxed">
               Creates a formatted Google Doc from a structured document model. Feed this node
               from an LLM Reasoning node with <strong>“Author a document”</strong> enabled — that
               makes it emit the document JSON this node renders.
@@ -409,7 +409,7 @@
 
           {#each CONFIG_FIELDS[canvasKind(selectedNode)] ?? [] as field}
             {#if field.type === 'checkbox'}
-              <label class="flex items-start gap-2 text-xs text-gray-600 cursor-pointer">
+              <label class="flex items-start gap-2 text-xs text-sand-600 cursor-pointer">
                 <input type="checkbox" class="mt-0.5"
                   checked={Boolean(selectedNode.config[field.key])}
                   on:change={(e) => updateConfigBool(field.key, e.currentTarget.checked)} />
@@ -446,15 +446,15 @@
           <!-- Connections list -->
           {#if selectedNodeEdges.length > 0}
             <div>
-              <div class="text-xs font-medium text-gray-500 mb-1">Connections</div>
+              <div class="text-xs font-medium text-sand-500 mb-1">Connections</div>
               <div class="space-y-1">
                 {#each selectedNodeEdges as edge (edge.id)}
                   {@const isOut = edge.source === selectedNode.id}
                   {@const otherId = isOut ? edge.target : edge.source}
                   {@const otherNode = nodes.find(n => n.id === otherId)}
-                  <div class="flex items-center gap-2 text-xs bg-gray-50 rounded px-2 py-1.5">
-                    <span class="text-gray-400 font-mono w-4 shrink-0">{isOut ? '→' : '←'}</span>
-                    <span class="flex-1 truncate text-gray-700">{otherNode?.label ?? otherId}</span>
+                  <div class="flex items-center gap-2 text-xs bg-sand-50 rounded px-2 py-1.5">
+                    <span class="text-sand-400 font-mono w-4 shrink-0">{isOut ? '→' : '←'}</span>
+                    <span class="flex-1 truncate text-sand-700">{otherNode?.label ?? otherId}</span>
                     <button
                       class="text-red-400 hover:text-red-600 text-sm font-bold leading-none px-1 shrink-0"
                       title="Remove connection"
@@ -475,7 +475,7 @@
 
     <!-- Canvas -->
     {#if loading}
-      <div class="flex-1 flex items-center justify-center text-gray-400">Loading workflow...</div>
+      <div class="flex-1 flex items-center justify-center text-sand-400">Loading workflow...</div>
     {:else if error}
       <div class="flex-1 flex items-center justify-center text-red-500">{error}</div>
     {:else}

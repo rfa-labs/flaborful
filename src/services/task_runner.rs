@@ -246,6 +246,7 @@ pub async fn resume_after_approval(
     let note = crate::services::vault::VaultNote {
         id: Uuid::new_v4(),
         agent_id: agent_id_row.agent_id,
+        owner_kind: "agent".into(),
         slug: format!("approved-output-{}", task_id.simple()),
         title: if title.trim().is_empty() {
             "Approved output".into()
