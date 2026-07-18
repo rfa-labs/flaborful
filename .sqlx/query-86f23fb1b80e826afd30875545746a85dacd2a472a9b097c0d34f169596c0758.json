@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT persona_system_prompt, cf_finetune_id FROM agents WHERE id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "persona_system_prompt",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "cf_finetune_id",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true,
+      true
+    ]
+  },
+  "hash": "86f23fb1b80e826afd30875545746a85dacd2a472a9b097c0d34f169596c0758"
+}
