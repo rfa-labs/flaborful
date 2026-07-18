@@ -188,6 +188,9 @@ pub async fn access_token_for_job(
         ConnectionProvider::Github => "github",
         // Docs/Drive grants are recorded as the google_drive tool_type.
         ConnectionProvider::Google => "google_drive",
+        // The non-code likeness sources aren't job-time integration tool_types (they're onboarding
+        // ingestion sources, not resources a company grants per job).
+        other => return Err(anyhow!("provider {} is not a job integration", other.as_str())),
     };
 
     let row = sqlx::query!(

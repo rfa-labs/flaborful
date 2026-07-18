@@ -285,9 +285,11 @@ impl ManagedAgentsBackend {
                  the COMPANY's vault (files/symbols, decisions in their codebase — proprietary \
                  detail is fine), and `record_experience` to write the transferable lesson into \
                  YOUR OWN vault (architecture/patterns you used and learned — NO company name, \
-                 secrets, or proprietary identifiers). search_vault first and set `related` so each \
-                 note connects into the existing graph. Then output a concise summary of what you \
-                 changed."
+                 secrets, or proprietary identifiers). If this task followed a repeatable PROCEDURE \
+                 worth reusing (a sequence you'd do the same way next time), call `write_skill` to \
+                 save it as a step-by-step playbook in your vault. search_vault first and set \
+                 `related` so each note connects into the existing graph. Then output a concise \
+                 summary of what you changed."
             }
             super::TaskKind::Ingest => {
                 "You are documenting a codebase into the professional's knowledge vault on their \
@@ -713,7 +715,12 @@ impl ExecutionBackend for ManagedAgentsBackend {
 fn is_vault_tool(name: &str) -> bool {
     matches!(
         name,
-        "upsert_note" | "list_vault" | "read_note" | "search_vault" | "follow_links"
+        "upsert_note"
+            | "list_vault"
+            | "read_note"
+            | "search_vault"
+            | "follow_links"
+            | "write_skill"
     )
 }
 
@@ -777,6 +784,21 @@ fn vault_tool_specs() -> Vec<Value> {
                 "properties": {
                     "slug": { "type": "string" }, "title": { "type": "string" },
                     "body": { "type": "string" }, "layer": { "type": "string" },
+                    "related": { "type": "array", "items": { "type": "string" } }
+                },
+                "required": ["slug", "body"]
+            }
+        }),
+        json!({
+            "type": "custom", "name": "write_skill",
+            "description": "Save a reusable SKILL in YOUR OWN vault — a step-by-step playbook for a task you did well, so future runs can repeat it consistently. 'when_to_use' is the one-line trigger that decides when this skill loads into a future task's brief; 'body' is the numbered, prescriptive steps. Prefer this over a plain note when the knowledge is a repeatable PROCEDURE (e.g. 'how I add a migration', 'my PR checklist'). Skills are transferable and default to shareable — keep them free of the company's proprietary specifics.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "slug": { "type": "string" }, "title": { "type": "string" },
+                    "when_to_use": { "type": "string" },
+                    "body": { "type": "string" },
+                    "domain": { "type": "string" },
                     "related": { "type": "array", "items": { "type": "string" } }
                 },
                 "required": ["slug", "body"]

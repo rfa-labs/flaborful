@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import { browser } from '$app/environment';
   import { page } from '$app/stores';
   import { goto } from '$app/navigation';
@@ -8,6 +8,24 @@
   const Node = NodeC as any;
   const Anchor = AnchorC as any;
   import { api } from '$lib/api/client';
+  import {
+    loadManifests,
+    CATEGORY_LABELS,
+    CATEGORY_ORDER,
+    type NodeManifest,
+  } from '$lib/api/nodeManifests';
+  import FieldRenderer from '$lib/components/nodes/FieldRenderer.svelte';
+  import PositionTracker from '$lib/components/PositionTracker.svelte';
+
+  // Node type metadata now comes from the backend registry (GET /node-manifests), keyed by type.
+  let manifests: NodeManifest[] = [];
+  let manifestByType: Record<string, NodeManifest> = {};
+  let paletteSearch = '';
+
+  // Focus the palette search when it opens (action avoids the autofocus a11y lint).
+  function focusOnMount(node: HTMLElement) {
+    node.focus();
+  }
 
   $: workflowId = $page.params.id;
   // When arriving from a pending task ("build a new workflow for this task"), this holds the task
@@ -28,7 +46,9 @@
     target: string;
   }
 
-  let workflow: { id: string; name: string; description: string; graph: { nodes: WFNode[]; edges: WFEdge[] }; is_universal: boolean } | null = null;
+  let workflow: { id: string; agent_id: string; name: string; description: string; graph: { nodes: WFNode[]; edges: WFEdge[] }; is_universal: boolean } | null = null;
+  // Other workflows belonging to this agent — the pick-list for a Subflow node's target.
+  let siblingWorkflows: { id: string; name: string }[] = [];
   let nodes: WFNode[] = [];
   // edges is the single source of truth — updated only via on:connection / on:disconnection
   let edges: WFEdge[] = [];
@@ -42,14 +62,40 @@
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const nodeDisconnectors: Record<string, (targets: any) => void> = {};
+  // Live (dragged) positions reported continuously by <PositionTracker>. Keyed by node id.
   const livePositions: Record<string, { x: number; y: number }> = {};
+
+  // Auto-center the graph once after the workflow loads. PositionTracker.fit() reads
+  // svelvet's node bounds from the graph context and applies the same math as svelvet's own
+  // fit-view control. Bounds only populate after the <Node> components mount (one or two
+  // ticks after the parent), so we retry until fit() reports it actually applied.
+  let positionTracker: PositionTracker | null = null;
+  let didAutoFit = false;
+  async function tryAutoFit() {
+    for (let i = 0; i < 10 && !didAutoFit; i++) {
+      await tick();
+      if (positionTracker?.fit()) didAutoFit = true;
+    }
+  }
+  $: if (!loading && nodes.length > 0 && !didAutoFit) tryAutoFit();
 
   onMount(async () => {
     try {
-      workflow = await api.get(`/workflows/${workflowId}`);
+      const [wf, mans] = await Promise.all([
+        api.get<typeof workflow>(`/workflows/${workflowId}`),
+        loadManifests(),
+      ]);
+      manifests = mans;
+      manifestByType = Object.fromEntries(mans.map((m) => [m.type, m]));
+      workflow = wf;
       if (workflow) {
         nodes = workflow.graph.nodes ?? [];
         edges = workflow.graph.edges ?? [];
+        // Load the agent's other workflows so a Subflow node can pick which one to run.
+        api
+          .get<{ id: string; name: string }[]>(`/workflows/agent/${workflow.agent_id}`)
+          .then((list) => { siblingWorkflows = list.filter((w) => w.id !== workflow!.id); })
+          .catch(() => { siblingWorkflows = []; });
       }
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to load workflow';
@@ -57,6 +103,51 @@
       loading = false;
     }
   });
+
+  // The manifest for a node, resolved via its canvas kind (alias-aware).
+  function manifestFor(node: WFNode): NodeManifest | undefined {
+    return manifestByType[canvasKind(node)];
+  }
+
+  // Fields visible for the currently-selected node, honoring `visible_when` and advanced toggle.
+  $: selectedManifest = selectedNode ? manifestFor(selectedNode) : undefined;
+  // A node is upgradeable when its stored version is behind the manifest's current version.
+  $: nodeVersion = Number(selectedNode?.config?._node_version ?? 1);
+  $: canUpgrade = !!selectedManifest && nodeVersion < selectedManifest.version;
+  function upgradeNode() {
+    if (!selectedNode || !selectedManifest) return;
+    selectedNode.config._node_version = selectedManifest.version;
+    // Seed any new-in-this-version fields with their defaults (non-destructive to existing config).
+    for (const f of selectedManifest.inputs) {
+      if (f.default !== undefined && selectedNode.config[f.key] === undefined) {
+        selectedNode.config[f.key] = f.default;
+      }
+    }
+    nodes = syncedNodes();
+  }
+  let showAdvanced = false;
+  $: visibleFields = (selectedManifest?.inputs ?? []).filter((f) => {
+    if (f.visible_when && selectedNode) {
+      const [dep, val] = f.visible_when;
+      if (String(selectedNode.config[dep] ?? '') !== val) return false;
+    }
+    return true;
+  });
+  $: basicFields = visibleFields.filter((f) => !f.advanced);
+  $: advancedFields = visibleFields.filter((f) => f.advanced);
+
+  // Palette grouped by category, filtered by search.
+  $: palette = CATEGORY_ORDER.map((cat) => ({
+    cat,
+    label: CATEGORY_LABELS[cat],
+    items: manifests.filter(
+      (m) =>
+        m.category === cat &&
+        (!paletteSearch ||
+          m.label.toLowerCase().includes(paletteSearch.toLowerCase()) ||
+          m.type.includes(paletteSearch.toLowerCase())),
+    ),
+  })).filter((g) => g.items.length);
 
   function onConnection(sourceNodeId: string, targetNodeId: string) {
     const edgeId = `${sourceNodeId}-${targetNodeId}`;
@@ -69,12 +160,19 @@
     edges = edges.filter(e => !(e.source === sourceNodeId && e.target === targetNodeId));
   }
 
-  // Svelvet emits untyped CustomEvents; these factories keep the markup tidy and typed.
+  // on:nodeReleased in svelvet only fires on a click (mouse moved < 4px), NOT on a real
+  // drag, so it is useless for capturing dragged positions. Live positions are instead
+  // tracked continuously by <PositionTracker> (see the <Svelvet> block), which subscribes
+  // to svelvet's internal per-node position stores via the graph context and writes them
+  // into `livePositions` via on:position. syncedNodes() then folds those live positions
+  // back into WFNode.position before any `nodes = [...]` reassignment so the {#each}
+  // re-render doesn't snap the graph back to its add-time spawn layout.
+  // PositionTracker dispatches { id, x, y }; we just stash it into livePositions.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const onNodeReleased = (nodeId: string) => (e: any) => {
-    const pos = e.detail?.node?.position;
-    if (pos && typeof pos.subscribe === 'function') {
-      pos.subscribe((v: { x: number; y: number }) => { livePositions[nodeId] = v; })();
+  const onPosition = (e: any) => {
+    const { id, x, y } = e.detail ?? {};
+    if (id && typeof x === 'number' && typeof y === 'number') {
+      livePositions[id] = { x, y };
     }
   };
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -100,30 +198,6 @@
     edges = edges.filter(e => e.id !== edge.id);
   }
 
-  const NODE_TYPES = [
-    { type: 'trigger',            label: 'Trigger',         color: '#7c4dff', group: 'Control' },
-    { type: 'llm_reasoning',      label: 'LLM Reasoning',   color: '#6a34ff', group: 'AI' },
-    { type: 'human_gate',         label: 'Human Gate',      color: '#f59e0b', group: 'Control' },
-    { type: 'conditional_branch', label: 'Branch',          color: '#7c4dff', group: 'Control' },
-    { type: 'output',             label: 'Output',          color: '#10b981', group: 'Control' },
-    { type: 'formatter',          label: 'Formatter',       color: '#7c4dff', group: 'Utility' },
-    { type: 'github',             label: 'GitHub',          color: '#1f2937', group: 'Tools' },
-    { type: 'diff_analyzer',      label: 'Diff Analyzer',   color: '#1f2937', group: 'Tools' },
-    { type: 'stack_trace_parser', label: 'Stack Trace',     color: '#1f2937', group: 'Tools' },
-    { type: 'http_request',       label: 'HTTP Request',    color: '#0ea5e9', group: 'Tools' },
-    { type: 'slack',              label: 'Slack',           color: '#4a154b', group: 'Tools' },
-    { type: 'email',              label: 'Email',           color: '#ea4335', group: 'Tools' },
-    { type: 'web_search',         label: 'Web Search',      color: '#34a853', group: 'Tools' },
-    { type: 'google_docs',        label: 'Google Doc',      color: '#1a73e8', group: 'Tools' },
-    { type: 'agent_implement',    label: 'Agent: Implement', color: '#0f766e', group: 'Software Engineering' },
-    { type: 'sprite_command',     label: 'Run Command',     color: '#0e7490', group: 'Software Engineering' },
-    { type: 'sprite_test',        label: 'Run Tests',       color: '#0891b2', group: 'Software Engineering' },
-    { type: 'git_commit',         label: 'Git Commit',      color: '#374151', group: 'Software Engineering' },
-    { type: 'git_push',           label: 'Git Push',        color: '#111827', group: 'Software Engineering' },
-    { type: 'test_gate',          label: 'Test Gate',       color: '#b45309', group: 'Software Engineering' },
-    { type: 'pr_create',          label: 'Create PR',       color: '#1f2937', group: 'Software Engineering' },
-  ];
-
   // Some canvas node types are presentation-only aliases over a backend NodeType with
   // preset config. google_docs → document_read_write with provider=google_docs.
   const NODE_TYPE_PRESETS: Record<string, { node_type: string; config: Record<string, unknown> }> = {
@@ -134,39 +208,49 @@
   };
 
   // The canvas "kind" of a node: its alias if it has one (via config.canvas_kind),
-  // otherwise its raw node_type. Used for color/label/config lookups so preset nodes
+  // otherwise its raw node_type. Used for manifest/config lookups so preset nodes
   // keep their identity after save/reload.
   function canvasKind(node: WFNode): string {
     return (node.config?.canvas_kind as string) ?? node.node_type;
   }
 
   function nodeColor(type: string) {
-    return NODE_TYPES.find(n => n.type === type)?.color ?? '#6b7280';
+    return manifestByType[type]?.color ?? '#6b7280';
   }
 
   function nodeLabel(type: string) {
-    return NODE_TYPES.find(n => n.type === type)?.label ?? type;
+    return manifestByType[type]?.label ?? type;
   }
 
   function addNode(type: string) {
     const label = nodeLabel(type);
     const preset = NODE_TYPE_PRESETS[type];
+    const manifest = manifestByType[type];
+    // Seed config with the manifest's field defaults (and preset config for aliases).
+    const seeded: Record<string, unknown> = { ...(preset?.config ?? {}) };
+    for (const f of manifest?.inputs ?? []) {
+      if (f.default !== undefined && seeded[f.key] === undefined) seeded[f.key] = f.default;
+    }
+    if (preset) seeded.canvas_kind = type;
+    // Stamp the manifest version this node was authored at, so a later manifest bump can offer
+    // an opt-in upgrade rather than silently changing existing graphs.
+    seeded._node_version = manifest?.version ?? 1;
     const newNode: WFNode = {
       id: `${type}_${Date.now()}`,
       node_type: preset?.node_type ?? type,
       label,
-      // Seed preset config and tag the canvas kind so the alias survives reload.
-      config: preset ? { ...preset.config, canvas_kind: type } : {},
+      config: seeded,
       position: { x: 200 + nodes.length * 60, y: 200 + (nodes.length % 3) * 80 },
     };
-    nodes = [...nodes, newNode];
+    nodes = [...syncedNodes(), newNode];
     showAddPanel = false;
     selectedNode = newNode;
   }
 
   function removeNode(id: string) {
-    nodes = nodes.filter(n => n.id !== id);
+    nodes = syncedNodes().filter(n => n.id !== id);
     edges = edges.filter(e => e.source !== id && e.target !== id);
+    delete livePositions[id];
     if (selectedNode?.id === id) selectedNode = null;
   }
 
@@ -178,26 +262,36 @@
     return nodes.map(n => livePositions[n.id] ? { ...n, position: livePositions[n.id] } : n);
   }
 
-  function updateConfig(key: string, value: string) {
-    if (!selectedNode) return;
-    selectedNode.config[key] = value;
-    nodes = syncedNodes();
-  }
-
   // A sensible starting prompt for an LLM node that authors a document. The engine adds
   // the strict-JSON DocumentModel schema to the system prompt automatically when
   // document_author is on, so this only needs to describe the content to write.
   const DOC_AUTHOR_PROMPT_DEFAULT =
     'Write a professional document for the following request, in your own voice and to your usual standard:\n\n{{input}}';
 
-  function updateConfigBool(key: string, value: boolean) {
+  // Single generic config setter driven by the manifest field renderer — handles every field type
+  // (string, number-as-string, boolean, key_value/repeater arrays).
+  function updateConfigValue(key: string, value: unknown) {
     if (!selectedNode) return;
     selectedNode.config[key] = value;
-    // Turning on document-author mode: seed a starter prompt if none is set yet.
+    // Preserve the doc-author convenience: seed a starter prompt when it's turned on.
     if (key === 'document_author' && value && !String(selectedNode.config.prompt ?? '').trim()) {
       selectedNode.config.prompt = DOC_AUTHOR_PROMPT_DEFAULT;
     }
     nodes = syncedNodes();
+  }
+
+  function duplicateNode() {
+    if (!selectedNode) return;
+    const kind = canvasKind(selectedNode);
+    const copy: WFNode = {
+      id: `${kind}_${Date.now()}`,
+      node_type: selectedNode.node_type,
+      label: selectedNode.label,
+      config: JSON.parse(JSON.stringify(selectedNode.config)),
+      position: { x: selectedNode.position.x + 40, y: selectedNode.position.y + 40 },
+    };
+    nodes = [...syncedNodes(), copy];
+    selectedNode = copy;
   }
 
   async function save() {
@@ -218,6 +312,46 @@
     }
   }
 
+  // ── Checkpoints (graph version history) ──────────────────────────────────
+  interface Checkpoint { id: string; number: number; label: string | null; created_at: string }
+  let checkpoints: Checkpoint[] = [];
+  let showHistory = false;
+
+  async function loadCheckpoints() {
+    try {
+      checkpoints = await api.get<Checkpoint[]>(`/workflows/${workflowId}/checkpoints`);
+    } catch { checkpoints = []; }
+  }
+  async function saveCheckpoint() {
+    await save(); // snapshot the current saved graph
+    if (error) return;
+    try {
+      const label = prompt('Checkpoint label (optional):') ?? undefined;
+      await api.post(`/workflows/${workflowId}/checkpoints`, { label });
+      await loadCheckpoints();
+    } catch (e: unknown) {
+      error = e instanceof Error ? e.message : 'Failed to save checkpoint';
+    }
+  }
+  async function restoreCheckpoint(cp: Checkpoint) {
+    if (!confirm(`Restore checkpoint #${cp.number}? Your current draft is saved as a checkpoint first.`)) return;
+    try {
+      const res = await api.post<{ graph: { nodes: WFNode[]; edges: WFEdge[] } }>(`/workflows/${workflowId}/checkpoints/${cp.id}/restore`, {});
+      nodes = res.graph.nodes ?? [];
+      edges = res.graph.edges ?? [];
+      if (workflow) workflow.graph = res.graph;
+      selectedNode = null;
+      await loadCheckpoints();
+      showHistory = false;
+    } catch (e: unknown) {
+      error = e instanceof Error ? e.message : 'Failed to restore checkpoint';
+    }
+  }
+  function toggleHistory() {
+    showHistory = !showHistory;
+    if (showHistory) loadCheckpoints();
+  }
+
   // Save the workflow, then set it as the pending task's workflow (which dispatches the run) and
   // jump to that task's execution view.
   async function assignToTask() {
@@ -234,80 +368,6 @@
       saving = false;
     }
   }
-
-  const CONFIG_FIELDS: Record<string, Array<{ key: string; label: string; type: string; placeholder?: string }>> = {
-    llm_reasoning:      [{ key: 'prompt', label: 'Prompt template', type: 'textarea', placeholder: 'Analyze this: {{input}}' }, { key: 'input_var', label: 'Input variable', type: 'text', placeholder: 'trigger_output' }, { key: 'output_var', label: 'Output variable', type: 'text', placeholder: 'llm_output' }, { key: 'document_author', label: 'Author a document (emit structured doc JSON for a Google Doc node)', type: 'checkbox' }],
-    human_gate:         [{ key: 'input_var', label: 'Input variable to show', type: 'text', placeholder: 'llm_output' }],
-    github:             [{ key: 'action', label: 'Action', type: 'select' }, { key: 'output_var', label: 'Output variable', type: 'text', placeholder: 'diff' }],
-    formatter:          [{ key: 'input_var', label: 'Input variable', type: 'text', placeholder: 'llm_output' }, { key: 'format', label: 'Format', type: 'select' }, { key: 'output_var', label: 'Output variable', type: 'text', placeholder: 'formatted_output' }],
-    http_request:       [{ key: 'url', label: 'URL', type: 'text', placeholder: 'https://api.example.com/...' }, { key: 'method', label: 'Method', type: 'select' }, { key: 'output_var', label: 'Output variable', type: 'text', placeholder: 'http_response' }],
-    conditional_branch: [{ key: 'condition_var', label: 'Variable to evaluate', type: 'text', placeholder: 'llm_output' }, { key: 'conditions', label: 'Conditions (JSON)', type: 'textarea', placeholder: '{"if_contains_bug": "yes", "otherwise": "no"}' }],
-    output:             [{ key: 'output_var', label: 'Variable to deliver', type: 'text', placeholder: 'llm_output' }],
-    diff_analyzer:      [{ key: 'diff_var', label: 'Diff variable', type: 'text', placeholder: 'diff' }, { key: 'output_var', label: 'Output variable', type: 'text', placeholder: 'diff_analysis' }],
-    stack_trace_parser: [{ key: 'input_var', label: 'Input variable', type: 'text', placeholder: 'input' }, { key: 'output_var', label: 'Output variable', type: 'text', placeholder: 'parsed_trace' }],
-    google_docs:        [
-      { key: 'model_var', label: 'Document model variable', type: 'text', placeholder: 'llm_output' },
-      { key: 'file_name', label: 'File name', type: 'text', placeholder: 'defaults to the doc title' },
-      { key: 'shared_drive_id', label: 'Shared Drive ID', type: 'text', placeholder: 'inherits from job grant if blank' },
-      { key: 'parent_folder_id', label: 'Folder ID (optional)', type: 'text', placeholder: 'drive root if blank' },
-      { key: 'output_var', label: 'Output variable', type: 'text', placeholder: 'created_doc' },
-    ],
-    agent_implement:    [
-      { key: 'task', label: 'Task for the agent', type: 'textarea', placeholder: 'Describe the change to implement (or leave blank to use task_var)' },
-      { key: 'task_var', label: 'Task variable', type: 'text', placeholder: 'input' },
-      { key: 'instructions', label: 'Agent instructions (how to run the loop)', type: 'textarea', placeholder: 'e.g. Consult the principal on design decisions. Write unit tests and run them. Use concise, conventional commit messages.' },
-      { key: 'repo', label: 'Repo (owner/name)', type: 'text', placeholder: 'inherits from ctx.vars[repo]' },
-      { key: 'base_branch', label: 'Base branch', type: 'text', placeholder: 'main' },
-      { key: 'branch', label: 'Work branch', type: 'text', placeholder: 'auto: flaborful/task-…' },
-      { key: 'backend', label: 'Backend override', type: 'select' },
-      { key: 'output_var', label: 'Output variable', type: 'text', placeholder: 'implementation' },
-    ],
-    sprite_command:     [
-      { key: 'command', label: 'Command', type: 'textarea', placeholder: 'e.g. npm run build (or leave blank to use command_var)' },
-      { key: 'command_var', label: 'Command variable', type: 'text', placeholder: 'command' },
-      { key: 'timeout_s', label: 'Timeout (seconds)', type: 'text', placeholder: '300' },
-      { key: 'output_var', label: 'Output variable', type: 'text', placeholder: 'command_result' },
-    ],
-    sprite_test:        [
-      { key: 'test_command', label: 'Test command', type: 'text', placeholder: 'npm test' },
-      { key: 'timeout_s', label: 'Timeout (seconds)', type: 'text', placeholder: '600' },
-      { key: 'output_var', label: 'Output variable', type: 'text', placeholder: 'test_results' },
-    ],
-    git_commit:         [
-      { key: 'message', label: 'Commit message', type: 'textarea', placeholder: 'Changes by your Flaborful agent (or use message_var)' },
-      { key: 'message_var', label: 'Message variable', type: 'text', placeholder: 'commit_message' },
-      { key: 'add_paths', label: 'Paths to stage', type: 'text', placeholder: '-A' },
-      { key: 'output_var', label: 'Output variable', type: 'text', placeholder: 'commit_result' },
-    ],
-    git_push:           [
-      { key: 'branch', label: 'Branch', type: 'text', placeholder: 'inherits from implementation.branch' },
-      { key: 'force', label: 'Force push', type: 'checkbox' },
-      { key: 'output_var', label: 'Output variable', type: 'text', placeholder: 'push_result' },
-    ],
-    test_gate:          [
-      { key: 'test_command', label: 'Test command', type: 'text', placeholder: 'npm test' },
-      { key: 'lint_command', label: 'Lint command (optional)', type: 'text', placeholder: 'npm run lint' },
-      { key: 'max_retries', label: 'Max fix attempts', type: 'text', placeholder: '2' },
-      { key: 'timeout_s', label: 'Timeout (seconds)', type: 'text', placeholder: '600' },
-      { key: 'output_var', label: 'Output variable', type: 'text', placeholder: 'gate_result' },
-    ],
-    pr_create:          [
-      { key: 'repo', label: 'Repo (owner/name)', type: 'text', placeholder: 'inherits from ctx.vars[repo]' },
-      { key: 'source_var', label: 'Branch source variable', type: 'text', placeholder: 'push_result' },
-      { key: 'base', label: 'Base branch', type: 'text', placeholder: 'main' },
-      { key: 'title', label: 'PR title', type: 'text', placeholder: 'Changes by your Flaborful agent' },
-      { key: 'body_var', label: 'PR body variable', type: 'text', placeholder: 'llm_output' },
-      { key: 'draft', label: 'Open as draft', type: 'checkbox' },
-      { key: 'output_var', label: 'Output variable', type: 'text', placeholder: 'pr_result' },
-    ],
-  };
-
-  const SELECT_OPTIONS: Record<string, string[]> = {
-    action: ['fetch_diff', 'post_comment'],
-    format: ['markdown', 'json', 'email', 'plain'],
-    method: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
-    backend: ['', 'managed', 'sprite'],
-  };
 
   // Initial connections for a node's output anchor (only used at mount time by Svelvet)
   function initialConnections(nodeId: string): [string, string][] {
@@ -338,6 +398,7 @@
 
     <div class="flex-1"></div>
 
+    <button class="btn-ghost text-sm" on:click={toggleHistory}>History</button>
     <button class="btn-ghost text-sm" on:click={() => showAddPanel = !showAddPanel}>
       + Add node
     </button>
@@ -363,85 +424,155 @@
   {/if}
 
   <div class="flex-1 flex overflow-hidden relative">
-    <!-- Node type panel -->
-    {#if showAddPanel}
-      <div class="absolute left-4 top-4 z-20 bg-white rounded-xl border border-sand-200 shadow-lg w-56 py-2">
-        <div class="px-3 py-1 text-xs font-semibold text-sand-400 uppercase tracking-wide">Add node</div>
-        {#each ['Control', 'AI', 'Software Engineering', 'Tools', 'Utility'] as group}
-          {@const items = NODE_TYPES.filter(n => n.group === group)}
-          {#if items.length}
-            <div class="px-3 py-1 mt-1 text-xs font-medium text-sand-500">{group}</div>
-            {#each items as nt}
-              <button
-                class="w-full text-left px-3 py-2 text-sm hover:bg-sand-50 flex items-center gap-2"
-                on:click={() => addNode(nt.type)}>
-                <span class="w-2 h-2 rounded-full shrink-0" style="background:{nt.color}"></span>
-                {nt.label}
-              </button>
-            {/each}
+    <!-- Checkpoint history -->
+    {#if showHistory}
+      <div class="absolute right-4 top-4 z-30 bg-white rounded-xl border border-sand-200 shadow-lg w-72 max-h-[85vh] flex flex-col">
+        <div class="px-4 py-3 border-b border-sand-100 flex items-center justify-between">
+          <span class="font-semibold text-sm">Version history</span>
+          <button class="text-sand-400 hover:text-sand-600 text-lg leading-none" on:click={() => showHistory = false}>×</button>
+        </div>
+        <div class="p-3">
+          <button class="btn-secondary text-sm w-full mb-2" on:click={saveCheckpoint}>Save checkpoint</button>
+          {#if checkpoints.length === 0}
+            <p class="text-xs text-sand-400 text-center py-3">No checkpoints yet. Save one to snapshot this graph.</p>
+          {:else}
+            <ul class="space-y-1 overflow-y-auto">
+              {#each checkpoints as cp (cp.id)}
+                <li class="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-sand-50">
+                  <div class="flex-1 min-w-0">
+                    <div class="text-sm font-medium">#{cp.number}{#if cp.label} · {cp.label}{/if}</div>
+                    <div class="text-[11px] text-sand-400">{new Date(cp.created_at).toLocaleString()}</div>
+                  </div>
+                  <button class="text-xs text-brand-600 hover:underline shrink-0" on:click={() => restoreCheckpoint(cp)}>Restore</button>
+                </li>
+              {/each}
+            </ul>
           {/if}
-        {/each}
+        </div>
       </div>
     {/if}
 
-    <!-- Config panel -->
+    <!-- Node palette (manifest-driven, categorized + searchable) -->
+    {#if showAddPanel}
+      <div class="absolute left-4 top-4 z-20 bg-white rounded-xl border border-sand-200 shadow-lg w-64 max-h-[85vh] flex flex-col">
+        <div class="p-2 border-b border-sand-100">
+          <input
+            class="input text-sm"
+            placeholder="Search all nodes…"
+            bind:value={paletteSearch}
+            use:focusOnMount />
+        </div>
+        <div class="overflow-y-auto py-1">
+          {#each palette as group}
+            <div class="px-3 py-1 mt-1 text-xs font-semibold text-sand-500">{group.label}</div>
+            {#each group.items as m}
+              <button
+                class="w-full text-left px-3 py-2 text-sm hover:bg-sand-50 flex items-start gap-2.5"
+                title={m.help}
+                on:click={() => addNode(m.type)}>
+                <span class="text-base leading-none mt-0.5" style="filter:grayscale(0)">{m.icon}</span>
+                <span class="flex-1 min-w-0">
+                  <span class="flex items-center gap-1.5">
+                    <span class="w-2 h-2 rounded-full shrink-0" style="background:{m.color}"></span>
+                    <span class="font-medium text-sand-800 truncate">{m.label}</span>
+                  </span>
+                  <span class="block text-[11px] text-sand-400 truncate">{m.help}</span>
+                </span>
+              </button>
+            {/each}
+          {/each}
+          {#if palette.length === 0}
+            <div class="px-3 py-4 text-xs text-sand-400 text-center">No nodes match “{paletteSearch}”.</div>
+          {/if}
+        </div>
+      </div>
+    {/if}
+
+    <!-- Config panel (manifest-driven) -->
     {#if selectedNode}
-      <div class="absolute right-4 top-4 z-20 bg-white rounded-xl border border-sand-200 shadow-lg w-72 max-h-[80vh] overflow-y-auto">
-        <div class="px-4 py-3 border-b border-sand-100 flex items-center justify-between">
-          <span class="font-semibold text-sm">{selectedNode.label}</span>
+      <div class="absolute right-4 top-4 z-20 bg-white rounded-xl border border-sand-200 shadow-lg w-80 max-h-[85vh] overflow-y-auto">
+        <div class="px-4 py-3 border-b border-sand-100 flex items-center gap-2">
+          <span class="text-base leading-none">{selectedManifest?.icon ?? '⬦'}</span>
+          <span class="font-semibold text-sm flex-1 truncate">{selectedNode.label}</span>
+          <button class="text-sand-400 hover:text-sand-600 text-xs" title="Duplicate node" on:click={duplicateNode}>⧉</button>
           <button class="text-sand-400 hover:text-sand-600 text-lg leading-none" on:click={() => selectedNode = null}>×</button>
         </div>
         <div class="p-4 space-y-3">
+          {#if selectedManifest?.help}
+            <p class="text-xs text-sand-500 bg-sand-50 border border-sand-100 rounded-lg p-2.5 leading-relaxed">
+              {selectedManifest.help}
+            </p>
+          {/if}
+
+          {#if canUpgrade}
+            <div class="text-xs bg-amber-50 border border-amber-200 rounded-lg p-2.5 flex items-center gap-2">
+              <span class="text-amber-800 flex-1">This node is v{nodeVersion}; v{selectedManifest?.version} is available.</span>
+              <button class="btn-secondary text-xs shrink-0" on:click={upgradeNode}>Upgrade</button>
+            </div>
+          {/if}
+
           <div>
             <label class="label text-xs" for="node-label">Node label</label>
             <input class="input text-sm" id="node-label"
               bind:value={selectedNode.label}
-              on:input={() => { nodes = [...nodes]; }} />
+              on:input={() => { nodes = syncedNodes(); }} />
           </div>
 
-          {#if canvasKind(selectedNode) === 'google_docs'}
-            <p class="text-xs text-sand-500 bg-blue-50 border border-blue-100 rounded-lg p-2.5 leading-relaxed">
-              Creates a formatted Google Doc from a structured document model. Feed this node
-              from an LLM Reasoning node with <strong>“Author a document”</strong> enabled — that
-              makes it emit the document JSON this node renders.
-            </p>
+          {#if selectedManifest?.loopable}
+            <label class="flex items-center gap-2 text-xs text-sand-600 cursor-pointer">
+              <input type="checkbox" class="accent-brand-600"
+                checked={Boolean(selectedNode.config.loop_mode)}
+                on:change={(e) => updateConfigValue('loop_mode', e.currentTarget.checked)} />
+              <span class="font-medium">Loop Mode</span>
+              <span class="text-sand-400">— run once per item over a list</span>
+            </label>
           {/if}
 
-          {#each CONFIG_FIELDS[canvasKind(selectedNode)] ?? [] as field}
-            {#if field.type === 'checkbox'}
-              <label class="flex items-start gap-2 text-xs text-sand-600 cursor-pointer">
-                <input type="checkbox" class="mt-0.5"
-                  checked={Boolean(selectedNode.config[field.key])}
-                  on:change={(e) => updateConfigBool(field.key, e.currentTarget.checked)} />
-                <span>{field.label}</span>
-              </label>
-            {:else}
-            <div>
-              <label class="label text-xs" for="cfg-{field.key}">{field.label}</label>
-              {#if field.type === 'textarea'}
-                <textarea class="input text-sm min-h-[70px] resize-none font-mono text-xs" id="cfg-{field.key}"
-                  placeholder={field.placeholder}
-                  on:input={(e) => updateConfig(field.key, e.currentTarget.value)}
-                >{String(selectedNode.config[field.key] ?? '')}</textarea>
-              {:else if field.type === 'select'}
-                <select class="input text-sm" id="cfg-{field.key}"
-                  value={String(selectedNode.config[field.key] ?? '')}
-                  on:change={(e) => updateConfig(field.key, e.currentTarget.value)}>
-                  <option value="">— select —</option>
-                  {#each SELECT_OPTIONS[field.key] ?? [] as opt}
-                    <option value={opt}>{opt}</option>
+          {#each basicFields as field (field.key)}
+            {#if field.key === 'workflow_id'}
+              <!-- Subflow target: a pick-list of the agent's other workflows. -->
+              <div>
+                <label class="label text-xs" for="cfg-workflow_id">{field.label}<span class="text-rose-500"> *</span></label>
+                <select class="input text-sm" id="cfg-workflow_id"
+                  value={String(selectedNode.config.workflow_id ?? '')}
+                  on:change={(e) => updateConfigValue('workflow_id', e.currentTarget.value)}>
+                  <option value="">— select a workflow —</option>
+                  {#each siblingWorkflows as wf}
+                    <option value={wf.id}>{wf.name}</option>
                   {/each}
                 </select>
-              {:else}
-                <input class="input text-sm" id="cfg-{field.key}"
-                  placeholder={field.placeholder}
-                  value={String(selectedNode.config[field.key] ?? '')}
-                  on:input={(e) => updateConfig(field.key, e.currentTarget.value)}
-                />
-              {/if}
-            </div>
+                {#if siblingWorkflows.length === 0}
+                  <p class="text-[11px] text-sand-400 mt-1">No other workflows yet — create one to run it as a subflow.</p>
+                {/if}
+              </div>
+            {:else}
+              <FieldRenderer {field} config={selectedNode.config} onChange={updateConfigValue} />
             {/if}
           {/each}
+
+          {#if advancedFields.length}
+            <button class="text-xs text-brand-600 hover:underline" on:click={() => showAdvanced = !showAdvanced}>
+              {showAdvanced ? '− Hide' : '+ Show more'} options
+            </button>
+            {#if showAdvanced}
+              <div class="space-y-3 pt-1">
+                {#each advancedFields as field (field.key)}
+                  <FieldRenderer {field} config={selectedNode.config} onChange={updateConfigValue} />
+                {/each}
+              </div>
+            {/if}
+          {/if}
+
+          {#if selectedManifest && selectedManifest.outputs.length}
+            <div>
+              <div class="text-xs font-medium text-sand-500 mb-1">Outputs</div>
+              <div class="flex flex-wrap gap-1.5">
+                {#each selectedManifest.outputs as port}
+                  <span class="badge-gray text-[11px]" title="type: {port.type}">{port.label}</span>
+                {/each}
+              </div>
+            </div>
+          {/if}
 
           <!-- Connections list -->
           {#if selectedNodeEdges.length > 0}
@@ -479,15 +610,15 @@
     {:else if error}
       <div class="flex-1 flex items-center justify-center text-red-500">{error}</div>
     {:else}
-      <div class="flex-1">
+      <div class="flex-1 min-h-0">
         <Svelvet
-          width={browser ? window.innerWidth : 1200}
-          height={browser ? window.innerHeight - 56 : 600}
           minimap
           controls
           theme="light"
         >
           <Background slot="background" />
+
+          <PositionTracker bind:this={positionTracker} on:position={onPosition} />
 
           {#each nodes as node (node.id)}
             <Node
@@ -500,7 +631,6 @@
               height={48}
               borderRadius={8}
               on:nodeClicked={() => { selectedNode = node; }}
-              on:nodeReleased={onNodeReleased(node.id)}
               let:disconnect
             >
               {(nodeDisconnectors[node.id] = disconnect, '')}

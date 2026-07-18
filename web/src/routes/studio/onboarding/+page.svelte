@@ -3,7 +3,7 @@
   import { goto } from '$app/navigation';
   import { page } from '$app/stores';
   import { api } from '$lib/api/client';
-  import { session } from '$lib/stores/session';
+  import { session, getToken } from '$lib/stores/session';
   import IngestionProgress from '$lib/components/IngestionProgress.svelte';
 
   let step = 1; // 1=Identity, 2=Knowledge, 3=Interview
@@ -70,6 +70,7 @@
         .then((conns) => {
           const gh = conns.find((c) => c.provider === 'github');
           if (gh) { githubConnected = true; githubLogin = gh.external_account; ingestDone = true; }
+          if (conns.some((c) => c.provider === 'google')) googleConnected = true;
         })
         .catch(() => { /* non-blocking */ });
       return;
@@ -170,6 +171,58 @@
       error = e instanceof Error ? e.message : 'GitHub ingestion failed';
     } finally {
       submitting = false;
+    }
+  }
+
+  // ── Step 2: additional (non-code) likeness sources ────────────────────────
+  // Google Docs: connect Google, then ingest the professional's own docs into the vault.
+  let googleConnected = false;
+  let googleBusy = false;
+  async function connectGoogleDocs() {
+    googleBusy = true; error = '';
+    try {
+      if (!googleConnected) {
+        const res = await api.get<{ url: string }>(`/auth/google/start?agent_id=${agentId}`);
+        window.location.href = res.url;
+        return;
+      }
+      await api.post('/onboarding/google-docs/ingest', { agent_id: agentId });
+      // Progress streams into the same IngestionProgress feed (source label "google_docs").
+      ingestDone = true;
+    } catch (e: unknown) {
+      error = e instanceof Error ? e.message : 'Google Docs ingestion failed';
+    } finally {
+      googleBusy = false;
+    }
+  }
+
+  // Portfolio/resume file upload → distilled into a vault note.
+  let uploading = false;
+  let uploadMsg = '';
+  async function uploadPortfolio(e: Event) {
+    const input = e.target as HTMLInputElement;
+    const file = input.files?.[0];
+    if (!file) return;
+    uploading = true; error = ''; uploadMsg = '';
+    try {
+      const form = new FormData();
+      form.append('file', file);
+      // FormData needs a raw fetch (the api helper sets JSON content-type).
+      const token = getToken();
+      const res = await fetch(`/api/v1/knowledge/agent/${agentId}/portfolio`, {
+        method: 'POST',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        body: form,
+      });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? 'Upload failed');
+      const out = await res.json();
+      uploadMsg = `Added ${out.notes_written ?? 0} note from “${file.name}”.`;
+      ingestDone = true;
+    } catch (err: unknown) {
+      error = err instanceof Error ? err.message : 'Upload failed';
+    } finally {
+      uploading = false;
+      input.value = '';
     }
   }
 
@@ -386,6 +439,34 @@
           </div>
         </div>
       {/if}
+
+      <!-- More sources — ingest likeness beyond code (for any profession). -->
+      <div class="border-t border-sand-100 pt-5 mt-6">
+        <div class="text-sm font-semibold text-sand-700 mb-1">More sources</div>
+        <p class="text-xs text-sand-500 mb-3">Not just code — bring in the documents that show how you work.</p>
+        <div class="grid sm:grid-cols-2 gap-3">
+          <!-- Google Docs -->
+          <button class="border border-sand-200 rounded-lg px-4 py-3 text-left hover:border-brand-400 transition-colors flex items-center gap-3"
+            disabled={googleBusy} on:click={connectGoogleDocs}>
+            <svg class="w-5 h-5 shrink-0" viewBox="0 0 24 24"><path fill="#4285F4" d="M14.727 6.727H14V0H4.91c-.905 0-1.637.732-1.637 1.636v20.728c0 .904.732 1.636 1.636 1.636h14.182c.904 0 1.636-.732 1.636-1.636V6.727h-6.545z"/><path fill="#fff" d="M7 12h10v1H7zm0 3h10v1H7zm0-6h5v1H7z"/></svg>
+            <span>
+              <span class="block text-sm font-medium text-sand-800">Google Docs</span>
+              <span class="block text-xs text-sand-400">{googleBusy ? 'Working…' : googleConnected ? 'Ingest my docs' : 'Connect & ingest'}</span>
+            </span>
+          </button>
+
+          <!-- Portfolio / resume file -->
+          <label class="border border-sand-200 rounded-lg px-4 py-3 text-left hover:border-brand-400 transition-colors flex items-center gap-3 cursor-pointer">
+            <span class="text-lg shrink-0">📄</span>
+            <span class="min-w-0">
+              <span class="block text-sm font-medium text-sand-800">Upload a file</span>
+              <span class="block text-xs text-sand-400 truncate">{uploading ? 'Reading…' : 'PDF, txt, or markdown'}</span>
+            </span>
+            <input type="file" class="hidden" accept=".pdf,.txt,.md,.markdown" on:change={uploadPortfolio} disabled={uploading} />
+          </label>
+        </div>
+        {#if uploadMsg}<p class="text-xs text-green-700 mt-2">{uploadMsg}</p>{/if}
+      </div>
 
       {#if error}<div class="text-red-600 text-sm bg-red-50 rounded-lg px-3 py-2 mt-4">{error}</div>{/if}
 

@@ -28,6 +28,7 @@ pub fn router() -> Router<AppState> {
         .route("/job/:job_id", get(list_for_job))
         .route("/job/:job_id/review-queue", get(review_queue))
         .route("/agent/:agent_id/active", get(list_active_for_agent))
+        .route("/agent/:agent_id/runs", get(list_runs_for_agent))
         .route("/:id/rerun/:node_id", post(rerun_from))
         .route("/:id/node/:node_id/effect-decision", post(effect_decision))
         .route("/:id/workflow", patch(assign_workflow))
@@ -239,6 +240,16 @@ async fn list_active_for_agent(
     authz::require_agent_owner(&state.db, auth.user_id, agent_id).await?;
     let tasks = svc::list_active_for_agent(&state.db, agent_id).await?;
     Ok(Json(tasks))
+}
+
+/// The run-log: every execution for this agent (delivered/failed/in-flight), newest first.
+async fn list_runs_for_agent(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(agent_id): Path<Uuid>,
+) -> AppResult<Json<Vec<svc::RunSummary>>> {
+    authz::require_agent_owner(&state.db, auth.user_id, agent_id).await?;
+    Ok(Json(svc::list_runs_for_agent(&state.db, agent_id, 100).await?))
 }
 
 /// GET /tasks/:id/node-executions — per-node execution records for the DAG inspector.

@@ -32,6 +32,15 @@
     }
   });
 
+  // Clone any workflow into a fresh editable copy (the library "use this" action).
+  async function cloneWorkflow(id: string, e: MouseEvent) {
+    e.stopPropagation();
+    try {
+      const wf = await api.post<Workflow>(`/workflows/${id}/clone`, {});
+      goto(`/studio/workflows/${wf.id}`);
+    } catch { /* ignore */ }
+  }
+
   async function createWorkflow() {
     const aid = $session.agentId;
     if (!aid) return;
@@ -196,7 +205,11 @@
             </span>
             <span class="text-sand-300">›</span>
             <button
-              class="ml-1 text-sand-300 hover:text-red-500 transition-colors px-1"
+              class="ml-1 text-sand-300 hover:text-brand-600 transition-colors px-1"
+              title="Duplicate workflow"
+              on:click={(e) => cloneWorkflow(wf.id, e)}>⧉</button>
+            <button
+              class="text-sand-300 hover:text-red-500 transition-colors px-1"
               title="Delete workflow"
               on:click={(e) => deleteWorkflow(wf.id, e)}>✕</button>
           </button>

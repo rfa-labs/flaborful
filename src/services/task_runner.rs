@@ -339,5 +339,22 @@ pub async fn resume_after_approval(
         .await?;
     }
 
+    // Grade the approved output against the agent's evaluation criteria (best-effort; no-op if the
+    // agent has none). The output the human approved is what ships, so that's what we evaluate.
+    let task_input = task
+        .input
+        .as_str()
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| task.input.to_string());
+    let _ = crate::services::evaluations::evaluate_task(
+        db,
+        inference,
+        task.agent_id,
+        task_id,
+        &task_input,
+        approved_output,
+    )
+    .await;
+
     Ok(())
 }

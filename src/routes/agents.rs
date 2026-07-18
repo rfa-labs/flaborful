@@ -26,6 +26,72 @@ pub fn router() -> Router<AppState> {
         .route("/:id/retrain/preview", post(preview_retrain))
         .route("/:id/reset", post(reset_agent))
         .route("/:id/execution", patch(set_execution))
+        .route("/:id/persona", patch(set_persona))
+        .route("/:id/tool-policy", get(get_tool_policy).put(set_tool_policy))
+}
+
+/// GET /agents/:id/tool-policy — the agent's HITL tool-approval policy (approve-before-write).
+async fn get_tool_policy(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<Uuid>,
+) -> AppResult<Json<crate::services::tool_policy::ToolPolicy>> {
+    authz::require_agent_owner(&state.db, auth.user_id, id).await?;
+    let policy = crate::services::tool_policy::get(&state.db, id)
+        .await
+        .map_err(crate::errors::AppError::Internal)?;
+    Ok(Json(policy))
+}
+
+#[derive(Deserialize)]
+struct SetToolPolicyBody {
+    mode: String,
+    #[serde(default)]
+    rules: serde_json::Value,
+}
+
+/// PUT /agents/:id/tool-policy — set the approval mode + per-effect-kind rules.
+async fn set_tool_policy(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<Uuid>,
+    Json(body): Json<SetToolPolicyBody>,
+) -> AppResult<Json<serde_json::Value>> {
+    authz::require_agent_owner(&state.db, auth.user_id, id).await?;
+    let rules = if body.rules.is_object() {
+        body.rules
+    } else {
+        serde_json::json!({})
+    };
+    crate::services::tool_policy::set(&state.db, id, &body.mode, &rules)
+        .await
+        .map_err(crate::errors::AppError::Internal)?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+#[derive(Deserialize)]
+struct SetPersonaBody {
+    persona_system_prompt: String,
+}
+
+/// PATCH /agents/:id/persona — edit the agent's system prompt (its standing instructions). This is
+/// auto-generated from the GitHub style guide at onboarding, but the professional (or an approved
+/// instruction-update reflection) can refine it. See [[Flaborful Reflections & Evaluations]].
+async fn set_persona(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<Uuid>,
+    Json(body): Json<SetPersonaBody>,
+) -> AppResult<Json<serde_json::Value>> {
+    authz::require_agent_owner(&state.db, auth.user_id, id).await?;
+    sqlx::query!(
+        "UPDATE agents SET persona_system_prompt = $1, updated_at = NOW() WHERE id = $2",
+        body.persona_system_prompt,
+        id,
+    )
+    .execute(&state.db)
+    .await?;
+    Ok(Json(serde_json::json!({ "ok": true })))
 }
 
 #[derive(Deserialize)]

@@ -25,6 +25,7 @@ use crate::{
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/github/ingest", post(ingest_github))
+        .route("/google-docs/ingest", post(ingest_google_docs))
         .route("/scenarios/:profession", get(get_scenarios))
         .route("/interview/submit", post(submit_interview))
         // Slim, open-form interview (communication & reasoning style → style-rule vault notes).
@@ -243,6 +244,80 @@ async fn ingest_github(
         style_guide,
         persona_prompt,
     }))
+}
+
+#[derive(Deserialize)]
+struct IngestGoogleDocsRequest {
+    agent_id: Uuid,
+}
+
+/// POST /onboarding/google-docs/ingest — ingest the professional's Google Docs into their vault
+/// (the first non-code likeness source). Resolves the owner's Google connection, fetches their
+/// docs, and distills each into a vault note in the background (returns immediately, like GitHub).
+async fn ingest_google_docs(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Json(body): Json<IngestGoogleDocsRequest>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    crate::services::authz::require_agent_owner(&state.db, auth.user_id, body.agent_id).await?;
+
+    let conn = connections::get_for_user(&state.db, auth.user_id, ConnectionProvider::Google)
+        .await
+        .map_err(AppError::Internal)?
+        .ok_or_else(|| {
+            AppError::BadRequest("Google account not connected. Connect Google first.".into())
+        })?;
+    let token = connections::fresh_access_token(&state.db, &conn)
+        .await
+        .map_err(AppError::Internal)?;
+
+    // Persona + LoRA so notes are written in the professional's voice (best-effort).
+    let row = sqlx::query!(
+        "SELECT persona_system_prompt, cf_finetune_id FROM agents WHERE id = $1",
+        body.agent_id
+    )
+    .fetch_optional(&state.db)
+    .await?;
+    let principal = row.map(|r| (r.persona_system_prompt.unwrap_or_default(), r.cf_finetune_id));
+
+    let db = state.db.clone();
+    let qdrant = state.qdrant.clone();
+    let inference = state.inference.clone();
+    let owner = crate::services::vault::VaultOwner::Agent(body.agent_id);
+    tokio::spawn(async move {
+        use crate::services::onboarding::documents;
+        match documents::fetch_google_docs(&token, 15).await {
+            Ok(docs) if !docs.is_empty() => {
+                let _ = documents::ingest_documents(
+                    &db, &qdrant, &inference, owner, principal, "google_docs", docs,
+                )
+                .await;
+            }
+            Ok(_) => {
+                // Nothing to ingest — still emit a completion event so the UI stops waiting.
+                let _ = sqlx::query!(
+                    "INSERT INTO ingestion_events (owner_kind, agent_id, repo, kind, status, detail)
+                     VALUES ('agent', $1, 'google_docs', 'status', 'done', 'No Google Docs found to ingest')",
+                    owner.id(),
+                )
+                .execute(&db)
+                .await;
+            }
+            Err(e) => {
+                tracing::warn!("google docs ingestion failed for {}: {e:?}", owner.id());
+                let _ = sqlx::query!(
+                    "INSERT INTO ingestion_events (owner_kind, agent_id, repo, kind, status, detail)
+                     VALUES ('agent', $1, 'google_docs', 'status', 'failed', $2)",
+                    owner.id(),
+                    format!("Google Docs ingestion failed: {e}"),
+                )
+                .execute(&db)
+                .await;
+            }
+        }
+    });
+
+    Ok(Json(serde_json::json!({ "started": true })))
 }
 
 #[derive(Serialize)]

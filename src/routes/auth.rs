@@ -65,11 +65,8 @@ async fn disconnect(
     State(state): State<AppState>,
     Path(provider): Path<String>,
 ) -> AppResult<Json<serde_json::Value>> {
-    let provider = match provider.as_str() {
-        "github" => ConnectionProvider::Github,
-        "google" => ConnectionProvider::Google,
-        other => return Err(AppError::BadRequest(format!("Unknown provider '{other}'"))),
-    };
+    let provider = ConnectionProvider::from_str(&provider)
+        .ok_or_else(|| AppError::BadRequest(format!("Unknown provider '{provider}'")))?;
     let removed = connections::delete_for_user(&state.db, auth.user_id, provider)
         .await
         .map_err(AppError::Internal)?;

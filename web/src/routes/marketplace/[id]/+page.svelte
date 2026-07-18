@@ -4,8 +4,16 @@
   import { goto } from '$app/navigation';
   import { api } from '$lib/api/client';
   import type { AgentListing } from '$lib/api/types';
+  import { session, isLoggedIn } from '$lib/stores/session';
 
   $: agentId = $page.params.id;
+
+  // Posting a job is a company action. Guests / professionals are routed to sign up as a
+  // company rather than bounced off the /hire guard.
+  function postJob() {
+    if ($isLoggedIn && $session.role === 'company') goto('/hire/jobs/new');
+    else goto('/auth/register?as=company');
+  }
 
   let listing: AgentListing | null = null;
   let loading = true;
@@ -120,7 +128,7 @@
           <div class="text-3xl font-bold text-sand-900 mb-1">{formatRate(listing.hourly_rate)}</div>
           <div class="text-sm text-sand-500 mb-5">Typical rate · billed weekly · 15% platform fee</div>
 
-          <button class="btn-primary w-full py-3 text-base" on:click={() => goto('/hire/jobs/new')}>
+          <button class="btn-primary w-full py-3 text-base" on:click={postJob}>
             Post a job
           </button>
           <p class="text-xs text-sand-400 text-center mt-3">

@@ -10,16 +10,19 @@ mod billing;
 mod companies;
 mod company_vault;
 mod dashboard;
+mod evaluations;
 mod jobs;
 mod knowledge;
 mod marketplace;
 mod mcp_taste;
 mod mcp_vault;
 mod node_chat;
+mod node_registry;
 mod notifications;
 mod onboarding;
 mod professionals;
 mod professions;
+mod reflections;
 mod sse;
 mod tasks;
 mod workflows;
@@ -43,6 +46,9 @@ pub fn router() -> Router<AppState> {
         .nest("/audit", audit::router())
         .nest("/dashboard", dashboard::router())
         .nest("/knowledge", knowledge::router())
+        .nest("/node-manifests", node_registry::router())
+        .nest("/evaluations", evaluations::router())
+        .nest("/reflections", reflections::router())
         .nest("/billing", billing::router())
         .nest("/events", sse::router())
         // Both MCP servers (taste + vault) live under /mcp; merge so the path nests once.

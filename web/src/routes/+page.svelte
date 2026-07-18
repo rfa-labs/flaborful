@@ -1,6 +1,13 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
   import { onMount } from 'svelte';
+  import { session } from '$lib/stores/session';
+
+  // The landing page speaks to both sides of the market. The header audience selector sets
+  // session.portal; this page swaps its entire copy between the professional and company
+  // variant off that value, reusing the exact same sections and styling.
+  $: audience = $session.portal; // 'professional' | 'company'
+  $: isCompany = audience === 'company';
 
   // The signature: the hero cycles through professions, each with the work that profession's
   // agent actually does. Breadth is demonstrated in the first three seconds instead of being
@@ -34,24 +41,89 @@
   const steps = [
     {
       k: 'It reads your work',
-      d: 'Point it at what you have — repos, documents, decks, case files, spreadsheets. It reads through and writes up how you actually work: the patterns you reach for, the calls you make, the shortcuts you refuse to take.',
+      d: 'Point it at your repos, docs, decks, and case files. It writes up how you actually work — the patterns you reach for, the shortcuts you refuse.',
     },
     {
       k: 'It learns your taste',
-      d: 'Then it trains on that. Not a prompt wrapped around someone else’s model — a fine-tuned adapter that encodes your judgment, and that belongs to you. Export it or delete it whenever you like.',
+      d: 'Then it trains on that: a fine-tuned adapter that encodes your judgment and belongs to you. Export or delete it anytime.',
     },
     {
       k: 'It does the job',
-      d: 'A company hires it. It does the work end to end and brings you the result. You approve, amend, or throw it out. Nothing leaves without you saying so — and you get paid either way.',
+      d: 'A company hires it. It works end to end and brings you the result. Nothing leaves without your say-so — and you get paid.',
+    },
+  ];
+
+  // For professionals & freelancers — the concrete "what you get" grid.
+  const pros = [
+    {
+      k: 'One agent, many clients',
+      d: 'Put it to work for a dozen companies at once. Each pays modestly; it stacks into a living.',
+    },
+    {
+      k: 'Bring your own book',
+      d: 'Point the clients you already have here. They onboard and pay through the platform — you run it.',
+    },
+    {
+      k: 'You stay the operator',
+      d: 'It does the work and brings you the result. You approve it and put your name on it. Nothing ships without you.',
     },
   ];
 
   const terms = [
-    { t: 'The agent is yours.',           d: 'Trained on your work, held in your account. Take the weights and walk, any day, without asking us.' },
-    { t: 'The work product is theirs.',   d: 'Same as any contractor: whoever hires you owns what your agent delivers for them. We don’t get cute about it.' },
-    { t: 'The experience comes home.',    d: 'What your agent learned on the job — the patterns, the judgment — comes back to you, stripped of their secrets, and makes the next job better.' },
-    { t: 'You are the gate.',             d: 'Nothing ships, sends, or files without your approval. The agent proposes. You decide. That is the whole product.' },
+    { t: 'Your agent is yours.',          d: 'Trained on your work, held in your account. Take the weights and walk any day.' },
+    { t: 'The work product is theirs.',   d: 'Like any contractor: whoever hires you owns what your agent delivers for them.' },
+    { t: 'The experience comes home.',    d: 'The judgment your agent sharpens on a job comes back to you. The client’s secrets don’t.' },
+    { t: 'Companies never bleed together.', d: 'One company’s data is walled off from every other company — and from every other agent.' },
+    { t: 'Proprietary info doesn’t linger.', d: 'When a job ends, that company’s proprietary data leaves the knowledge base. The skill stays, not the secrets.' },
+    { t: 'You are the gate.',             d: 'Nothing ships, sends, or files without your approval. The agent proposes; you decide.' },
   ];
+
+  // ── Company variant ─────────────────────────────────────────────────────────
+  // How hiring works from the company's seat.
+  const companySteps = [
+    {
+      k: 'Find your contractor',
+      d: 'Browse by profession and pick the expert whose agentic workforce fits your need — an accountant, an engineer, a designer, each a real human fronting their agents.',
+    },
+    {
+      k: 'Hand over the work',
+      d: 'Attach the context — a composable knowledge vault scoped to this job — and the agent gets to work. Frontier-quality output, a fraction of the cost of the human alone.',
+    },
+    {
+      k: 'A real human gates it',
+      d: 'The expert who trained the agent reviews, gates, and discusses the work with you. You’re not talking to a bot — you’re working with a professional who stands behind it.',
+    },
+  ];
+
+  // How a company judges which agent to hire.
+  const companyChoose = [
+    {
+      k: 'The real résumé',
+      d: 'See the professional behind the agent — their actual background and credentials, not a marketing bio.',
+    },
+    {
+      k: 'The knowledge graph',
+      d: 'Browse the agent’s knowledge vault as a graph. Nodes may be locked out — labels hidden at the professional’s choice — so you can gauge depth without exposing their secrets.',
+    },
+    {
+      k: 'The track record',
+      d: 'Jobs completed, outputs approved, work delivered. Hire on a record of getting it done, not a promise.',
+    },
+  ];
+
+  const companyTerms = [
+    { t: 'A human stands behind it.',     d: 'Every agent is operated and gated by the real expert who trained it. You hire the human and their workforce, together.' },
+    { t: 'Frontier quality, contractor price.', d: 'Expert-grade work on every task, for a fraction of what the professional alone would cost.' },
+    { t: 'Vaults attach, then detach.',   d: 'Give the agent a knowledge vault scoped to your job. When the work is done, it detaches — your proprietary data doesn’t linger.' },
+    { t: 'Your data never bleeds.',       d: 'What you share is walled off from every other company and every other agent on the platform.' },
+    { t: 'You own the work product.',     d: 'Like any contractor engagement: whatever the agent delivers for you is yours to keep.' },
+    { t: 'Real people, real conversation.', d: 'Gating and discussing the work happens with the expert, not a chatbot. Human judgment sits on top of the agentic labor.' },
+  ];
+
+  // Active copy for the current audience.
+  $: activeSteps  = isCompany ? companySteps  : steps;
+  $: activeGrid   = isCompany ? companyChoose : pros;
+  $: activeTerms  = isCompany ? companyTerms  : terms;
 </script>
 
 <svelte:head>
@@ -63,7 +135,7 @@
   <!-- Fonts (Bricolage Grotesque + Public Sans) are loaded app-wide in app.css now; just warm
        up the connection here. -->
   <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous" />
 </svelte:head>
 
 <div class="mkt">
@@ -74,13 +146,20 @@
   <section class="hero">
     <p class="pill">
       <span class="spark" aria-hidden="true"></span>
-      A worker-owned agent platform
+      {isCompany ? 'Experts, backed by an agentic workforce' : 'A worker-owned agent platform'}
     </p>
 
-    <h1>
-      Own the agent<br />
-      they built <em>from you.</em>
-    </h1>
+    {#if isCompany}
+      <h1>
+        Hire the expert.<br />
+        Their agents <em>do the work.</em>
+      </h1>
+    {:else}
+      <h1>
+        Own the agent<br />
+        they built <em>from you.</em>
+      </h1>
+    {/if}
 
     <!-- Signature: the profession cycler. -->
     <div
@@ -89,7 +168,7 @@
       on:mouseleave={() => (paused = false)}
       role="presentation"
     >
-      <span class="c-lead">Your</span>
+      <span class="c-lead">{isCompany ? 'An' : 'Your'}</span>
       <span class="c-slot">
         {#key current.name}
           <span class="c-word" style="--hue:{current.hue}">{current.name}</span>
@@ -103,48 +182,71 @@
       </span>
     </div>
 
-    <p class="lede">
-      Every project you delivered, every call you made, every junior you talked through it —
-      it fed a model. Then the model became the reason the team got smaller. Flaborful is the
-      other road: train an agent on your own work, keep it, and rent it out on your terms.
-    </p>
+    {#if isCompany}
+      <p class="lede">
+        Hire an accounting agent and you’re hiring an accountant — a real expert who operates and
+        gates an AI workforce. Frontier-quality work on every task, for a fraction of what the
+        professional alone would cost.
+      </p>
+    {:else}
+      <p class="lede">
+        They trained a model on your work, then made the team smaller.
+        Train your own instead: an agentic workforce that works in your style, that you own, and that earns for you.
+      </p>
+    {/if}
 
     <div class="cta">
-      <button class="b-main" on:click={() => goto('/auth/register?as=professional')}>
-        Claim your agent
-        <span class="arr" aria-hidden="true">→</span>
-      </button>
+      {#if isCompany}
+        <button class="b-main" on:click={() => goto('/marketplace')}>
+          Find your contractor
+          <span class="arr" aria-hidden="true">→</span>
+        </button>
+      {:else}
+        <button class="b-main" on:click={() => goto('/auth/register?as=professional')}>
+          Claim your agent
+          <span class="arr" aria-hidden="true">→</span>
+        </button>
+      {/if}
       <a class="b-alt" href="#how">See how it works</a>
     </div>
-
-    <p class="honest">
-      <strong>Straight with you:</strong> the marketplace isn’t open yet. We’re building the
-      professional side first — yours — and this line stays up until it is.
-    </p>
   </section>
 
   <!-- the argument -->
   <section class="argue">
     <div class="argue-card">
-      <h2>This only works if we go together.</h2>
-      <p>
-        A marketplace with no professionals in it is just a website. The sooner there are enough
-        of us with agents worth hiring, the sooner we can send businesses here instead of to the
-        firms that turned the layoffs into a line item.
-      </p>
-      <p>
-        So we’re building the supply side in the open. No invented traction, no logo wall of
-        companies that never signed. Build your agent, use it privately today, and be first in
-        line when the doors open.
-      </p>
+      {#if isCompany}
+        <h2>Find the contractor for the job.</h2>
+        <p>
+          The marketplace is where you find the right expert for a specific need — where the
+          “contractor” is an agentic workforce, trained and gated by a real human professional in
+          their field. You get their expertise at machine scale, without giving up the human.
+        </p>
+        <p>
+          Because a person stands behind every agent, there’s real conversation when it counts:
+          the expert gates the output, talks through the task, and answers for the work. Not a
+          tool you have to babysit — a professional you can actually hire.
+        </p>
+      {:else}
+        <h2>Your work is the pitch.</h2>
+        <p>
+          You don’t sell a business on a résumé anymore — you sell them on an agent that already
+          works the way you do. It applies, it delivers, and the delivery is the proof.
+        </p>
+        <p>
+          Freelancing already? Point the clients you have at Flaborful — they onboard, hand your
+          agent the work, and pay right here while you run it. One professional, many companies at
+          once: each job modest, and it stacks. We’re building the supply side in the open — so
+          grow the marketplace from the inside.
+        </p>
+      {/if}
     </div>
   </section>
 
   <!-- how -->
   <section class="how" id="how">
-    <h2 class="sec">How your agent gets built</h2>
+    <h2 class="sec">{isCompany ? 'How hiring works' : 'How your agent gets built'}</h2>
     <div class="steps">
-      {#each steps as s, n}
+      {#each activeSteps as s, n}
         <article class="step" style="--n:{n}">
           <span class="num">{n + 1}</span>
           <h3>{s.k}</h3>
@@ -154,15 +256,77 @@
     </div>
   </section>
 
+  <!-- audience-specific grid: pros' economics OR how a company chooses -->
+  <section class="pros">
+    {#if isCompany}
+      <h2 class="sec">How to choose an agent</h2>
+      <p class="sec-sub">
+        Judge on what’s real: the person, their proof, and their record.
+      </p>
+    {:else}
+      <h2 class="sec">Built for the way you already work</h2>
+      <p class="sec-sub">
+        An agentic workforce changes the math of freelancing.
+      </p>
+    {/if}
+    <div class="steps">
+      {#each activeGrid as p, n}
+        <article class="step" style="--n:{n}">
+          <h3>{p.k}</h3>
+          <p>{p.d}</p>
+        </article>
+      {/each}
+    </div>
+  </section>
+
+  <!-- marketplace / composable vaults -->
+  <section class="market">
+    <div class="market-card">
+      {#if isCompany}
+        <h2>Context that attaches, then lets go.</h2>
+        <p>
+          Every agent carries a knowledge vault — the professional’s expertise, as a graph you can
+          browse before you hire. For your job, hand it a composable vault scoped to the work:
+          your context, temporarily attached for exactly as long as it’s needed.
+        </p>
+        <p>
+          When the job ends, that vault detaches. The skill the agent gained stays with the
+          expert; your proprietary information leaves. You get the depth of a specialist without
+          your data living anywhere it shouldn’t.
+        </p>
+      {:else}
+        <h2>A marketplace of professions, not prompts.</h2>
+        <p>
+          A directory where every profession is a real expert fronting an agent trained on how they
+          work. A company or local business shows up with a problem and finds not a tool to figure
+          out, but a professional whose agent just does the job.
+        </p>
+        <p>
+          Breadth is the pull: the more professions on the board, the more businesses come looking.
+          Early on it grows fastest from the inside — professionals bringing the clients they
+          already have.
+        </p>
+      {/if}
+    </div>
+  </section>
+
   <!-- terms -->
   <section class="terms">
-    <h2 class="sec">Where the line is</h2>
-    <p class="sec-sub">
-      The question everyone asks first. Here is the whole answer, with nothing buried in a
-      terms page.
-    </p>
+    {#if isCompany}
+      <h2 class="sec">What you’re actually hiring</h2>
+      <p class="sec-sub">
+        An expert and their agentic workforce — with the guarantees a contractor engagement
+        should have. Nothing buried in a terms page.
+      </p>
+    {:else}
+      <h2 class="sec">Data trust, structured like a contractor</h2>
+      <p class="sec-sub">
+        Your agent works for a company the way you would — the work product is theirs, the
+        experience is yours. The whole boundary, nothing buried in a terms page.
+      </p>
+    {/if}
     <div class="tgrid">
-      {#each terms as t, n}
+      {#each activeTerms as t, n}
         <div class="term" style="--n:{n}">
           <span class="tmark" aria-hidden="true"></span>
           <h3>{t.t}</h3>
@@ -173,13 +337,23 @@
   </section>
 
   <section class="end">
-    <h2>Your work already trained somebody’s model.</h2>
-    <p class="end-sub">Make the next one yours.</p>
-    <button class="b-main lg" on:click={() => goto('/auth/register?as=professional')}>
-      Claim your agent
-      <span class="arr" aria-hidden="true">→</span>
-    </button>
-    <p class="fine">Free while we build the professional side. No card.</p>
+    {#if isCompany}
+      <h2>Real expertise. Agentic scale.</h2>
+      <p class="end-sub">Find your contractor.</p>
+      <button class="b-main lg" on:click={() => goto('/marketplace')}>
+        Browse the marketplace
+        <span class="arr" aria-hidden="true">→</span>
+      </button>
+      <p class="fine">See the experts and their agents. No account needed to look.</p>
+    {:else}
+      <h2>Your work already trained somebody’s model.</h2>
+      <p class="end-sub">Make the next one yours.</p>
+      <button class="b-main lg" on:click={() => goto('/auth/register?as=professional')}>
+        Claim your agent
+        <span class="arr" aria-hidden="true">→</span>
+      </button>
+      <p class="fine">Free while we build the professional side. No card.</p>
+    {/if}
   </section>
 </div>
 
@@ -341,18 +515,6 @@
   }
   .b-alt:hover { background: #fff; transform: translateY(-1px); }
 
-  .honest {
-    margin: 2.6rem 0 0;
-    max-width: 36rem;
-    font-size: 0.9rem; line-height: 1.62; color: var(--ink-2);
-    background: rgba(255, 255, 255, 0.6);
-    border: 1px solid rgba(28, 21, 36, 0.07);
-    border-left: 3px solid var(--amber);
-    border-radius: 0 0.7rem 0.7rem 0;
-    padding: 0.9rem 1.1rem;
-  }
-  .honest strong { color: var(--ink); font-weight: 600; }
-
   /* ── argument ─────────────────────────────────────────── */
   .argue { padding-bottom: 5rem; }
   .argue-card {
@@ -384,8 +546,36 @@
     letter-spacing: -0.022em;
     margin: 0 0 2.2rem;
   }
-  .how { padding-bottom: 5rem; }
+  .how, .pros { padding-bottom: 5rem; }
   .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.4rem; }
+
+  /* ── marketplace ──────────────────────────────────────── */
+  /* A warm, light counterpart to the dark argue card, so the two narrative bands read as
+     different beats rather than a repeat. */
+  .market { padding-bottom: 5rem; }
+  .market-card {
+    background:
+      radial-gradient(120% 130% at 100% 0%, rgba(240, 134, 58, 0.16), transparent 60%),
+      linear-gradient(135deg, #fffaf4, #fdf1f6 60%, #f6eefc);
+    border: 1px solid rgba(124, 77, 255, 0.14);
+    border-radius: 1.5rem;
+    padding: 3.2rem 3rem;
+    box-shadow: 0 30px 60px -34px rgba(124, 77, 255, 0.4);
+    max-width: 52rem;
+  }
+  .market-card h2 {
+    font-family: var(--display); font-weight: 700;
+    font-size: clamp(1.6rem, 3.2vw, 2.3rem);
+    letter-spacing: -0.02em; line-height: 1.15;
+    margin: 0 0 1.2rem;
+    background: linear-gradient(105deg, var(--violet), var(--rose) 55%, var(--amber));
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  .market-card p {
+    font-size: 1rem; line-height: 1.72; color: var(--ink-2);
+    margin: 0 0 1rem; max-width: 42rem;
+  }
+  .market-card p:last-child { margin-bottom: 0; }
 
   .step {
     background: rgba(255, 255, 255, 0.78);
@@ -427,7 +617,7 @@
 
   /* These were bare text on the background while every neighbouring section was a card, which
      made the most-asked question read as an afterthought. Give them the same soft depth, with a
-     colour-coded edge so the four boundaries are visually distinct. */
+     colour-coded edge so the boundaries are visually distinct. */
   .term {
     position: relative;
     background: rgba(255, 255, 255, 0.78);
@@ -445,6 +635,8 @@
   .term:nth-child(2) .tmark { background: linear-gradient(180deg, var(--rose), var(--amber)); }
   .term:nth-child(3) .tmark { background: linear-gradient(180deg, var(--amber), var(--teal)); }
   .term:nth-child(4) .tmark { background: linear-gradient(180deg, var(--teal), var(--violet)); }
+  .term:nth-child(5) .tmark { background: linear-gradient(180deg, var(--violet), var(--amber)); }
+  .term:nth-child(6) .tmark { background: linear-gradient(180deg, var(--amber), var(--rose)); }
 
   .term h3 {
     font-family: var(--display); font-weight: 700; font-size: 1.12rem;
@@ -474,7 +666,7 @@
   @media (max-width: 880px) {
     .steps { grid-template-columns: 1fr; }
     .tgrid { grid-template-columns: 1fr; }
-    .argue-card { padding: 2.2rem 1.5rem; border-radius: 1.2rem; }
+    .argue-card, .market-card { padding: 2.2rem 1.5rem; border-radius: 1.2rem; }
     .hero { padding-top: 4rem; }
     .cycler { font-size: 1.02rem; }
   }

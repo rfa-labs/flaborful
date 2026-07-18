@@ -21,6 +21,7 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/agent/:agent_id", get(list_for_agent))
         .route("/agent/:agent_id/resume", post(set_resume))
+        .route("/agent/:agent_id/portfolio", post(upload_portfolio))
         .route("/agent/:agent_id/timeline", get(timeline))
         .route("/chunk/:chunk_id/visibility", put(set_visibility))
         .route("/chunk/:chunk_id", axum::routing::delete(delete_chunk))
@@ -133,6 +134,91 @@ async fn set_resume(
         .map_err(AppError::Internal)?;
 
     Ok(Json(serde_json::json!({ "status": "saved" })))
+}
+
+/// POST /knowledge/agent/:agent_id/portfolio — upload a portfolio/resume/case-study FILE (PDF, txt,
+/// or markdown). The text is extracted and distilled into a vault note in the professional's voice,
+/// the same document lane Google Docs ingestion uses. This is how non-engineers (and engineers with
+/// design docs) enrich their agent beyond code. Multipart form field `file`.
+async fn upload_portfolio(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(agent_id): Path<Uuid>,
+    mut multipart: axum::extract::Multipart,
+) -> AppResult<Json<serde_json::Value>> {
+    authz::require_agent_owner(&state.db, auth.user_id, agent_id).await?;
+
+    // Pull the first file field.
+    let mut filename = String::from("portfolio");
+    let mut bytes: Option<axum::body::Bytes> = None;
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| AppError::BadRequest(format!("bad upload: {e}")))?
+    {
+        if field.name() == Some("file") {
+            if let Some(fname) = field.file_name() {
+                filename = fname.to_string();
+            }
+            bytes = Some(
+                field
+                    .bytes()
+                    .await
+                    .map_err(|e| AppError::BadRequest(format!("failed to read file: {e}")))?,
+            );
+            break;
+        }
+    }
+    let bytes = bytes.ok_or_else(|| AppError::BadRequest("no 'file' field in upload".into()))?;
+
+    // Extract text: PDF via pdf-extract (CPU-bound → spawn_blocking), else treat as UTF-8 text.
+    let is_pdf = filename.to_lowercase().ends_with(".pdf")
+        || bytes.starts_with(b"%PDF");
+    let text = if is_pdf {
+        let data = bytes.to_vec();
+        tokio::task::spawn_blocking(move || pdf_extract::extract_text_from_mem(&data))
+            .await
+            .map_err(|e| AppError::Internal(anyhow::anyhow!("pdf task join: {e}")))?
+            .map_err(|e| AppError::BadRequest(format!("could not read PDF: {e}")))?
+    } else {
+        String::from_utf8_lossy(&bytes).to_string()
+    };
+    if text.trim().is_empty() {
+        return Err(AppError::BadRequest(
+            "No text could be extracted from the file.".into(),
+        ));
+    }
+
+    // A nice title from the filename (strip extension).
+    let title = filename
+        .rsplit_once('.')
+        .map(|(base, _)| base)
+        .unwrap_or(&filename)
+        .replace(['_', '-'], " ");
+
+    // Distill into a vault note via the shared document ingester (source label "portfolio").
+    let doc = crate::services::onboarding::documents::IngestedDoc { title, text };
+    let principal = sqlx::query!(
+        "SELECT persona_system_prompt, cf_finetune_id FROM agents WHERE id = $1",
+        agent_id
+    )
+    .fetch_optional(&state.db)
+    .await?
+    .map(|r| (r.persona_system_prompt.unwrap_or_default(), r.cf_finetune_id));
+
+    let written = crate::services::onboarding::documents::ingest_documents(
+        &state.db,
+        &state.qdrant,
+        &state.inference,
+        VaultOwner::Agent(agent_id),
+        principal,
+        "portfolio",
+        vec![doc],
+    )
+    .await
+    .map_err(AppError::Internal)?;
+
+    Ok(Json(serde_json::json!({ "notes_written": written })))
 }
 
 #[derive(Deserialize)]
