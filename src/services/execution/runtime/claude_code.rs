@@ -47,9 +47,19 @@ impl AgentRuntime for ClaudeCodeRuntime {
         // the project .mcp.json server without it. Single-quote-escape dynamic strings.
         let persona = shell_escape(&brief.persona_prompt);
         let prompt = shell_escape(&build_prompt(brief));
+        // `--output-format stream-json --verbose` makes Claude Code emit one JSON event per line as
+        // it works, instead of buffering all output until the run finishes and printing it at the
+        // end. Without this, the platform's `exec_streaming` sees NO output for the entire run — the
+        // onboarding feed sits at "0 notes written" and the server logs go silent after "running
+        // coding agent…" even when the agent is working (or hung — you can't tell which). Streaming
+        // surfaces tool calls (including the `upsert_note` MCP calls that ARE the ingestion
+        // deliverable) live, so progress is visible and failures are diagnosable. The delimited
+        // end-of-run summary still rides through in the JSON `result` text, so `parse_summary`'s
+        // substring scan over the raw stream keeps working.
         format!(
             "cd {repo} && ANTHROPIC_MODEL=claude-opus-4-8 claude -p {prompt} \
              --append-system-prompt {persona} \
+             --output-format stream-json --verbose \
              --permission-mode acceptEdits --dangerously-skip-permissions \
              --allowedTools 'Bash,Edit,Write,Read,Glob,Grep,mcp__principal__consult_principal,mcp__vault__upsert_note,mcp__vault__list_vault,mcp__vault__read_note,mcp__vault__search_vault,mcp__vault__follow_links,mcp__vault__record_experience,mcp__vault__record_technical' \
              2>&1",

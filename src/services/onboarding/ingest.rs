@@ -135,10 +135,15 @@ impl IngestionSink {
 #[async_trait::async_trait]
 impl TranscriptSink for IngestionSink {
     async fn push(&self, chunk: &str) {
-        // The managed backend prefixes vault-tool results with the tool name, e.g.
-        // "[upsert_note] → ...". Count those as notes written and tag the event so the UI can
-        // distinguish a note being created from generic transcript.
-        let is_note = chunk.starts_with("[upsert_note]");
+        // Detect a note being written, across BOTH backends:
+        //  - Managed prefixes vault-tool results with the tool name: "[upsert_note] → ...".
+        //  - Sprite streams Claude Code's `stream-json` events, where an upsert shows up as a
+        //    tool-use line naming `upsert_note` (e.g. `mcp__vault__upsert_note`).
+        // Either way, tag the event as a note so the UI can distinguish it from generic transcript
+        // and tick the live counter. (The authoritative final tally still comes from
+        // vault_note_count() against the DB, so a missed/extra live tick can't corrupt the result.)
+        let is_note =
+            chunk.starts_with("[upsert_note]") || chunk.contains("mcp__vault__upsert_note");
         let notes = if is_note {
             self.notes.fetch_add(1, Ordering::Relaxed) + 1
         } else {
