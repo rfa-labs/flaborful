@@ -64,27 +64,36 @@ impl SpriteBackend {
         // apply to every command). Setup/egress are applied only on a fresh sprite below.
         let provisioning = sprite_env::for_job(&self.db, brief.job_id).await;
 
-        // Existing row? Resume if the sprite still exists.
-        let row = sqlx::query!(
-            "SELECT sprite_name, status FROM task_sprites WHERE task_id = $1",
-            brief.task_id
-        )
-        .fetch_optional(&self.db)
-        .await?;
+        // Ingestion runs are EPHEMERAL: a throwaway sprite per repo with a synthetic task_id that
+        // has NO `tasks` row, so we must NOT touch `task_sprites` (its task_id FK references
+        // tasks(id) — inserting would violate the constraint). Ingestion also never resumes and
+        // never runs follow-up Sprite-only nodes, so the persisted row would serve no purpose. The
+        // sprite is created fresh here and destroyed by run_implementation when the run finishes.
+        let ephemeral = matches!(brief.kind, super::TaskKind::Ingest);
 
-        if let Some(r) = row {
-            if let Some(name) = r.sprite_name {
-                if r.status != "destroyed" && r.status != "gone" {
-                    if let Ok(h) = self.client.get(&name).await {
-                        return Ok((h, provisioning));
+        if !ephemeral {
+            // Existing row? Resume if the sprite still exists.
+            let row = sqlx::query!(
+                "SELECT sprite_name, status FROM task_sprites WHERE task_id = $1",
+                brief.task_id
+            )
+            .fetch_optional(&self.db)
+            .await?;
+
+            if let Some(r) = row {
+                if let Some(name) = r.sprite_name {
+                    if r.status != "destroyed" && r.status != "gone" {
+                        if let Ok(h) = self.client.get(&name).await {
+                            return Ok((h, provisioning));
+                        }
+                        // Reaped — mark gone and recreate below.
+                        let _ = sqlx::query!(
+                            "UPDATE task_sprites SET status = 'gone' WHERE task_id = $1",
+                            brief.task_id
+                        )
+                        .execute(&self.db)
+                        .await;
                     }
-                    // Reaped — mark gone and recreate below.
-                    let _ = sqlx::query!(
-                        "UPDATE task_sprites SET status = 'gone' WHERE task_id = $1",
-                        brief.task_id
-                    )
-                    .execute(&self.db)
-                    .await;
                 }
             }
         }
@@ -93,6 +102,22 @@ impl SpriteBackend {
         sink.push(&format!("[sprite] creating {}\n", name)).await;
         let handle = self.client.create(&name).await?;
 
+        // From here on the sprite EXISTS. For ephemeral runs, any failure below must destroy it or
+        // it leaks (no task_sprites row means external teardown can't find it). Provision in a
+        // helper and clean up on error before propagating. Ephemeral runs skip the task_sprites
+        // row entirely (their synthetic task_id has no `tasks` row to reference).
+        if ephemeral {
+            if let Err(e) = self
+                .provision_sprite(brief, sink, &handle, &provisioning)
+                .await
+            {
+                let _ = self.client.destroy(&handle.name).await;
+                return Err(e);
+            }
+            return Ok((handle, provisioning));
+        }
+
+        // Persist the sprite for real tasks (resume + follow-up nodes + teardown).
         sqlx::query!(
             r#"INSERT INTO task_sprites (task_id, sprite_name, sprite_url, status, repo, branch, test_env_strategy)
                VALUES ($1, $2, $3, 'running', $4, $5, $6)
@@ -109,6 +134,25 @@ impl SpriteBackend {
         )
         .execute(&self.db)
         .await?;
+
+        self.provision_sprite(brief, sink, &handle, &provisioning)
+            .await?;
+
+        Ok((handle, provisioning))
+    }
+
+    /// Provision a freshly-created sprite: egress allowlist, repo clone, and the test-env setup
+    /// commands. Shared by real-task and ephemeral (ingestion) runs. For real tasks it also records
+    /// the clone HEAD into `task_sprites` for rerun reconciliation; ephemeral runs skip that (no
+    /// row, never rerun).
+    async fn provision_sprite(
+        &self,
+        brief: &TaskBrief,
+        sink: &dyn TranscriptSink,
+        handle: &SpriteHandle,
+        provisioning: &SpriteProvisioning,
+    ) -> Result<()> {
+        let ephemeral = matches!(brief.kind, super::TaskKind::Ingest);
 
         // Apply the egress allowlist before anything reaches the network (egress strategy).
         // HARD RULE: never apply a network policy for a VPN (`network`) job — Fly's egress proxy
@@ -173,19 +217,22 @@ impl SpriteBackend {
                 return Err(anyhow!("git clone failed: {}", out.stderr));
             }
             sink.push("[sprite] repo cloned\n").await;
-            // Record the clone HEAD for rerun reconciliation.
-            if let Ok(sha) = self
-                .client
-                .exec(&handle.name, "git rev-parse HEAD", Some(REPO_DIR), &[], 30)
-                .await
-            {
-                let _ = sqlx::query!(
-                    "UPDATE task_sprites SET head_sha = $1 WHERE task_id = $2",
-                    sha.stdout.trim(),
-                    brief.task_id
-                )
-                .execute(&self.db)
-                .await;
+            // Record the clone HEAD for rerun reconciliation (real tasks only — ephemeral ingestion
+            // runs have no task_sprites row and never rerun).
+            if !ephemeral {
+                if let Ok(sha) = self
+                    .client
+                    .exec(&handle.name, "git rev-parse HEAD", Some(REPO_DIR), &[], 30)
+                    .await
+                {
+                    let _ = sqlx::query!(
+                        "UPDATE task_sprites SET head_sha = $1 WHERE task_id = $2",
+                        sha.stdout.trim(),
+                        brief.task_id
+                    )
+                    .execute(&self.db)
+                    .await;
+                }
             }
         }
 
@@ -205,7 +252,7 @@ impl SpriteBackend {
             }
         }
 
-        Ok((handle, provisioning))
+        Ok(())
     }
 }
 
@@ -246,6 +293,34 @@ impl ExecutionBackend for SpriteBackend {
 
         let (handle, provisioning) = self.ensure_sprite(brief, sink).await?;
 
+        // Ephemeral (ingestion) sprites have no task_sprites row, so external teardown can't reach
+        // them — we own their whole lifecycle. Run the body, then destroy the sprite regardless of
+        // outcome. A "re-do from scratch" therefore always starts a brand-new sprite (nothing
+        // persists to resume), which is the correct semantics for ingestion.
+        let ephemeral = matches!(brief.kind, super::TaskKind::Ingest);
+        let result = self
+            .run_on_sprite(brief, sink, &handle, &provisioning, runtime.as_ref())
+            .await;
+        if ephemeral {
+            sink.push("[sprite] tearing down ephemeral sprite\n").await;
+            let _ = self.client.destroy(&handle.name).await;
+        }
+        result
+    }
+}
+
+impl SpriteBackend {
+    /// Drive the agent on an already-provisioned sprite: install the runtime, write its MCP config,
+    /// run it headless, and read back the diff/summary. Separated from `run_implementation` so the
+    /// caller can guarantee teardown of ephemeral sprites around this whole body.
+    async fn run_on_sprite(
+        &self,
+        brief: &TaskBrief,
+        sink: &dyn TranscriptSink,
+        handle: &SpriteHandle,
+        provisioning: &SpriteProvisioning,
+        runtime: &dyn AgentRuntime,
+    ) -> Result<ExecResult> {
         // Install the runtime + write its MCP config pointing at the shared taste endpoint.
         for cmd in runtime.install_spec().install_cmds {
             let _ = self
