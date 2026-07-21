@@ -100,7 +100,22 @@ impl SpriteBackend {
 
         let name = format!("flaborful-{}", &brief.task_id.simple().to_string()[..16]);
         sink.push(&format!("[sprite] creating {}\n", name)).await;
-        let handle = self.client.create(&name).await?;
+        // A create can report failure yet still leave a live sprite behind: with
+        // `wait_for_capacity`, the Sprites API provisions the VM and only then errors (a late 500, a
+        // timed-out long-poll, or an undeserializable success body). The VM exists but we never got
+        // a handle, so nothing reaps it — that's how "create failed" and orphaned cold sprites are
+        // both true. Since the name is deterministic (derived from task_id, identical to what create
+        // attempted), reap by that name on failure to kill any sprite that came up despite the
+        // error, then propagate the original failure.
+        let handle = match self.client.create(&name).await {
+            Ok(h) => h,
+            Err(e) => {
+                sink.push("[sprite] create failed — reaping any orphaned sprite\n")
+                    .await;
+                destroy_sprite_hard(&self.client, &name).await;
+                return Err(e);
+            }
+        };
 
         // From here on the sprite EXISTS. For ephemeral runs, any failure below must destroy it or
         // it leaks (no task_sprites row means external teardown can't find it). Provision in a
@@ -111,7 +126,7 @@ impl SpriteBackend {
                 .provision_sprite(brief, sink, &handle, &provisioning)
                 .await
             {
-                let _ = self.client.destroy(&handle.name).await;
+                destroy_sprite_hard(&self.client, &handle.name).await;
                 return Err(e);
             }
             return Ok((handle, provisioning));
@@ -303,7 +318,7 @@ impl ExecutionBackend for SpriteBackend {
             .await;
         if ephemeral {
             sink.push("[sprite] tearing down ephemeral sprite\n").await;
-            let _ = self.client.destroy(&handle.name).await;
+            destroy_sprite_hard(&self.client, &handle.name).await;
         }
         result
     }
@@ -476,6 +491,35 @@ pub async fn destroy_job_sprites(db: &PgPool, client: &SpriteClient, job_id: uui
     }
 }
 
+/// Destroy a sprite with bounded retries, and LOUDLY log if it ultimately fails.
+///
+/// A single `DELETE /sprites/{name}` is flaky — the Sprites API 500s/times out under load — and a
+/// swallowed failure permanently leaks the VM (it keeps running and billing, and there is no
+/// task_sprites row for ephemeral ingestion sprites, so nothing ever reaps it). We retry a few
+/// times with backoff; if every attempt fails we emit an error naming the sprite so an operator can
+/// delete it manually and knows a leak occurred (a `let _ = destroy()` hid both facts).
+async fn destroy_sprite_hard(client: &SpriteClient, name: &str) {
+    const ATTEMPTS: usize = 4;
+    for attempt in 1..=ATTEMPTS {
+        match client.destroy(name).await {
+            Ok(()) => return,
+            Err(e) => {
+                if attempt == ATTEMPTS {
+                    tracing::error!(
+                        "LEAKED SPRITE: failed to destroy {name} after {ATTEMPTS} attempts \
+                         ({e:?}) — it is still running and must be deleted manually"
+                    );
+                } else {
+                    tracing::warn!(
+                        "destroy {name} attempt {attempt}/{ATTEMPTS} failed ({e:?}); retrying"
+                    );
+                    tokio::time::sleep(std::time::Duration::from_secs(2 * attempt as u64)).await;
+                }
+            }
+        }
+    }
+}
+
 /// Destroy a task's sprite (best-effort), called on task terminal + job complete/kill.
 pub async fn destroy_task_sprite(db: &PgPool, client: &SpriteClient, task_id: uuid::Uuid) {
     if let Ok(Some(row)) = sqlx::query!(
@@ -486,7 +530,7 @@ pub async fn destroy_task_sprite(db: &PgPool, client: &SpriteClient, task_id: uu
     .await
     {
         if let Some(name) = row.sprite_name {
-            let _ = client.destroy(&name).await;
+            destroy_sprite_hard(client, &name).await;
         }
         let _ = sqlx::query!(
             "UPDATE task_sprites SET status = 'destroyed', destroyed_at = NOW() WHERE task_id = $1",
