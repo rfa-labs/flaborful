@@ -35,6 +35,10 @@
   let runtimeSpecText = '';
   let savingExec = false;
   let execSaved = false;
+  // Bring-your-own Anthropic key. We never receive the stored key back — only a presence flag.
+  let anthropicKey = '';          // the new key the user is typing (blank = leave unchanged)
+  let anthropicKeySet = false;    // true if a key is already on file
+  let replacingKey = false;       // user chose to replace an on-file key
 
   const CUSTOM_SPEC_PLACEHOLDER = `{
   "install_cmds": ["pip install my-agent"],
@@ -56,15 +60,44 @@
     }
     savingExec = true;
     try {
-      await api.patch(`/agents/${agentId}/execution`, {
+      // Only send the key when the user actually typed one — omitting it leaves the stored key
+      // untouched (an empty string would clear it server-side).
+      const payload: Record<string, unknown> = {
         execution_backend: backend,
         agent_runtime: runtime,
         runtime_spec,
-      });
+      };
+      if (anthropicKey.trim()) payload.anthropic_api_key = anthropicKey.trim();
+      await api.patch(`/agents/${agentId}/execution`, payload);
+      if (anthropicKey.trim()) {
+        anthropicKeySet = true;
+        anthropicKey = '';
+        replacingKey = false;
+      }
       execSaved = true;
       setTimeout(() => execSaved = false, 2000);
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to save execution settings';
+    } finally {
+      savingExec = false;
+    }
+  }
+
+  async function removeAnthropicKey() {
+    if (!agentId) return;
+    savingExec = true;
+    try {
+      // Explicit empty string clears the stored key server-side.
+      await api.patch(`/agents/${agentId}/execution`, {
+        execution_backend: backend,
+        agent_runtime: runtime,
+        anthropic_api_key: '',
+      });
+      anthropicKeySet = false;
+      anthropicKey = '';
+      replacingKey = false;
+    } catch (e: unknown) {
+      error = e instanceof Error ? e.message : 'Failed to remove key';
     } finally {
       savingExec = false;
     }
@@ -221,6 +254,7 @@
       if (agent?.execution_backend) backend = agent.execution_backend;
       if (agent?.agent_runtime) runtime = agent.agent_runtime;
       if (agent?.runtime_spec) runtimeSpecText = JSON.stringify(agent.runtime_spec, null, 2);
+      anthropicKeySet = agent?.anthropic_key_set ?? false;
       personaText = agent?.persona_system_prompt ?? '';
       loadCriteria();
       loadProposals();
@@ -429,8 +463,8 @@
         <div>
           <label class="label text-xs" for="backend">Execution backend</label>
           <select class="input text-sm" id="backend" bind:value={backend}>
-            <option value="managed">Managed (hosted — fastest, no setup)</option>
-            <option value="sprite">Sprite (your own VM — full control of the test environment)</option>
+            <option value="managed">Claude Code Managed Cloud</option>
+            <option value="sprite">flaborful sandboxes (powered by sprites.io)</option>
           </select>
         </div>
 
@@ -458,8 +492,34 @@
             </div>
           {/if}
         {:else}
-          <p class="text-xs text-sand-400">Managed runs Claude Code on Anthropic's hosted container; your repo token stays off the machine.</p>
+          <p class="text-xs text-sand-400">Claude Code Managed Cloud runs Claude Code on Anthropic's hosted container; your repo token stays off the machine. Runs bill to <strong>your own</strong> Anthropic API key.</p>
         {/if}
+
+        <!-- Bring-your-own Anthropic key. Required for Managed Cloud; optional for sandboxes. -->
+        <div>
+          <label class="label text-xs" for="anthropic-key">Anthropic API key</label>
+          {#if anthropicKeySet && !replacingKey}
+            <div class="flex items-center gap-2 text-sm">
+              <span class="text-sand-400 font-mono">•••• on file</span>
+              <button type="button" class="text-xs underline text-sand-400" on:click={() => { replacingKey = true; anthropicKey = ''; }}>Replace</button>
+              <button type="button" class="text-xs underline text-red-500" on:click={removeAnthropicKey} disabled={savingExec}>Remove</button>
+            </div>
+          {:else}
+            <input class="input text-sm font-mono" id="anthropic-key" type="password" autocomplete="off"
+              placeholder="sk-ant-…" bind:value={anthropicKey} />
+            {#if anthropicKeySet}
+              <button type="button" class="text-xs underline text-sand-400 mt-1" on:click={() => { replacingKey = false; anthropicKey = ''; }}>Cancel</button>
+            {/if}
+          {/if}
+          <p class="text-xs text-sand-400 mt-1">
+            {#if backend === 'managed'}
+              <strong>Required</strong> for Claude Code Managed Cloud — runs use this key.
+            {:else}
+              Optional. Leave blank to run on flaborful's shared capacity.
+            {/if}
+            Stored encrypted; never shown again.
+          </p>
+        </div>
       </div>
 
       <div class="flex justify-end mt-3">

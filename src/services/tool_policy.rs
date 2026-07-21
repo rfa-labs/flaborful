@@ -14,8 +14,8 @@ use uuid::Uuid;
 /// The resolved policy for an agent.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ToolPolicy {
-    pub mode: String,   // always_allow | ask_on_writes | ask_each_time
-    pub rules: Value,   // per-effect-kind overrides: { "github_pr": "ask" | "allow" }
+    pub mode: String, // always_allow | ask_on_writes | ask_each_time
+    pub rules: Value, // per-effect-kind overrides: { "github_pr": "ask" | "allow" }
 }
 
 impl Default for ToolPolicy {
@@ -77,19 +77,31 @@ mod tests {
     #[test]
     fn mode_and_rule_precedence() {
         // always_allow → never ask
-        let p = ToolPolicy { mode: "always_allow".into(), rules: json!({}) };
+        let p = ToolPolicy {
+            mode: "always_allow".into(),
+            rules: json!({}),
+        };
         assert!(!requires_approval(&p, "github_pr"));
 
         // ask_on_writes → ask for any write
-        let p = ToolPolicy { mode: "ask_on_writes".into(), rules: json!({}) };
+        let p = ToolPolicy {
+            mode: "ask_on_writes".into(),
+            rules: json!({}),
+        };
         assert!(requires_approval(&p, "slack_message"));
 
         // a per-kind rule overrides the mode both ways
-        let p = ToolPolicy { mode: "ask_on_writes".into(), rules: json!({ "slack_message": "allow" }) };
+        let p = ToolPolicy {
+            mode: "ask_on_writes".into(),
+            rules: json!({ "slack_message": "allow" }),
+        };
         assert!(!requires_approval(&p, "slack_message"));
         assert!(requires_approval(&p, "github_pr"));
 
-        let p = ToolPolicy { mode: "always_allow".into(), rules: json!({ "github_pr": "ask" }) };
+        let p = ToolPolicy {
+            mode: "always_allow".into(),
+            rules: json!({ "github_pr": "ask" }),
+        };
         assert!(requires_approval(&p, "github_pr"));
         assert!(!requires_approval(&p, "slack_message"));
     }

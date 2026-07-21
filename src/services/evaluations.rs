@@ -97,13 +97,21 @@ pub async fn evaluate_task(
 
     // Map the model's per-criterion pass/fail back onto our criteria (by name), carrying each
     // criterion's configured priority — the grade is computed from OUR priorities, not the model's.
-    let model_results = parsed.get("criteria").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    let model_results = parsed
+        .get("criteria")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
     let passed_by_name = |name: &str| -> Option<(bool, String)> {
         model_results.iter().find_map(|r| {
             let n = r.get("name").and_then(|v| v.as_str())?;
             if n.eq_ignore_ascii_case(name) {
                 let passed = r.get("passed").and_then(|v| v.as_bool()).unwrap_or(true);
-                let reason = r.get("reasoning").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let reason = r
+                    .get("reasoning")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 Some((passed, reason))
             } else {
                 None
@@ -138,7 +146,11 @@ pub async fn evaluate_task(
     };
 
     let tags = parsed.get("tags").cloned().unwrap_or(json!([]));
-    let summary = parsed.get("summary").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let summary = parsed
+        .get("summary")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
 
     sqlx::query(
         r#"INSERT INTO task_evaluations (task_id, agent_id, grade, criteria_results, tags, summary)

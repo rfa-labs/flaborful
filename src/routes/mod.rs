@@ -34,7 +34,10 @@ pub fn router() -> Router<AppState> {
         .nest("/professions", professions::router())
         .nest("/professionals", professionals::router())
         .nest("/agents", agents::router())
-        .nest("/companies", companies::router().merge(company_vault::router()))
+        .nest(
+            "/companies",
+            companies::router().merge(company_vault::router()),
+        )
         .nest("/jobs", jobs::router())
         .nest("/applications", applications::router())
         .nest("/node-chat", node_chat::router())

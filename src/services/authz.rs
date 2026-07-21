@@ -99,11 +99,7 @@ pub async fn require_agent_owner(db: &PgPool, user_id: Uuid, agent_id: Uuid) -> 
 
 /// Assert the caller owns the specific `company_id` (companies are 1:1 with users via
 /// `companies.user_id`). Used by the company-vault routes, where the company id is in the path.
-pub async fn require_company_owner(
-    db: &PgPool,
-    user_id: Uuid,
-    company_id: Uuid,
-) -> AppResult<()> {
+pub async fn require_company_owner(db: &PgPool, user_id: Uuid, company_id: Uuid) -> AppResult<()> {
     let owns = sqlx::query_scalar!(
         "SELECT EXISTS(SELECT 1 FROM companies WHERE id = $1 AND user_id = $2)",
         company_id,

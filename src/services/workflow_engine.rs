@@ -964,21 +964,35 @@ impl<'a> WorkflowEngine<'a> {
             // parent didn't map it) it falls back to whatever is already in vars, so a subflow can
             // still be run/tested standalone. Inside run_subflow the mapped inputs are pre-seeded.
             NodeType::SubflowInput => {
-                let name = node.config.get("name").and_then(|v| v.as_str()).unwrap_or("input");
+                let name = node
+                    .config
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("input");
                 let value = ctx.vars.get(name).cloned().unwrap_or(Value::Null);
-                Ok(NodeResult::Continue { output_key: name.to_string(), value })
+                Ok(NodeResult::Continue {
+                    output_key: name.to_string(),
+                    value,
+                })
             }
             // A SubflowOutput records its value under its name so run_subflow can lift it back into
             // the parent. It is terminal within the child graph (no downstream), like Output.
             NodeType::SubflowOutput => {
-                let name = node.config.get("name").and_then(|v| v.as_str()).unwrap_or("output");
+                let name = node
+                    .config
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("output");
                 let value_var = node
                     .config
                     .get("value_var")
                     .and_then(|v| v.as_str())
                     .unwrap_or(name);
                 let value = ctx.vars.get(value_var).cloned().unwrap_or(Value::Null);
-                Ok(NodeResult::Continue { output_key: format!("__subflow_out__{name}"), value })
+                Ok(NodeResult::Continue {
+                    output_key: format!("__subflow_out__{name}"),
+                    value,
+                })
             }
 
             NodeType::Output => {
@@ -1218,9 +1232,16 @@ impl<'a> WorkflowEngine<'a> {
             }
         }
         // Else a `<key>_var` pointing at a ctx var.
-        if let Some(var) = node.config.get(format!("{key}_var")).and_then(|v| v.as_str()) {
+        if let Some(var) = node
+            .config
+            .get(format!("{key}_var"))
+            .and_then(|v| v.as_str())
+        {
             if let Some(v) = ctx.vars.get(var) {
-                return v.as_str().map(|s| s.to_string()).unwrap_or_else(|| v.to_string());
+                return v
+                    .as_str()
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| v.to_string());
             }
         }
         default.to_string()
@@ -1241,7 +1262,10 @@ impl<'a> WorkflowEngine<'a> {
         for (k, v) in &ctx.vars {
             let needle = format!("{{{{{k}}}}}");
             if out.contains(&needle) {
-                let rendered = v.as_str().map(|s| s.to_string()).unwrap_or_else(|| v.to_string());
+                let rendered = v
+                    .as_str()
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| v.to_string());
                 out = out.replace(&needle, &rendered);
             }
         }
@@ -1258,16 +1282,32 @@ impl<'a> WorkflowEngine<'a> {
     }
 
     /// Filter: pass the input through only when a condition holds (if-statement for data).
-    async fn run_filter(&self, node: &WorkflowNode, ctx: &mut ExecutionContext) -> Result<NodeResult> {
+    async fn run_filter(
+        &self,
+        node: &WorkflowNode,
+        ctx: &mut ExecutionContext,
+    ) -> Result<NodeResult> {
         let filter_by = Self::cfg_or_var(node, ctx, "filter_by", "");
-        let condition = node.config.get("condition").and_then(|v| v.as_str()).unwrap_or("is_not_empty");
+        let condition = node
+            .config
+            .get("condition")
+            .and_then(|v| v.as_str())
+            .unwrap_or("is_not_empty");
         let cmp = Self::cfg_or_var(node, ctx, "conditional_value", "");
-        let input_raw = node.config.get("input_var").and_then(|v| v.as_str()).unwrap_or("input");
+        let input_raw = node
+            .config
+            .get("input_var")
+            .and_then(|v| v.as_str())
+            .unwrap_or("input");
         let input = Self::resolve_value(input_raw, ctx);
 
         let passes = Self::eval_condition(&filter_by, condition, &cmp);
         let output_key = Self::output_key(node, "filtered_output");
-        let output_blank = node.config.get("output_blank").and_then(|v| v.as_bool()).unwrap_or(false);
+        let output_blank = node
+            .config
+            .get("output_blank")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
 
         let value = if passes {
             input
@@ -1292,20 +1332,46 @@ impl<'a> WorkflowEngine<'a> {
             "ends_with" => lhs.ends_with(rhs),
             "is_empty" => lhs.trim().is_empty(),
             "is_not_empty" => !lhs.trim().is_empty(),
-            "is_true" => matches!(lhs.trim().to_ascii_lowercase().as_str(), "true" | "yes" | "1"),
-            "is_false" => matches!(lhs.trim().to_ascii_lowercase().as_str(), "false" | "no" | "0" | ""),
+            "is_true" => matches!(
+                lhs.trim().to_ascii_lowercase().as_str(),
+                "true" | "yes" | "1"
+            ),
+            "is_false" => matches!(
+                lhs.trim().to_ascii_lowercase().as_str(),
+                "false" | "no" | "0" | ""
+            ),
             _ => false,
         }
     }
 
     /// Router: choose one of up to 8 routes by AI interpretation or deterministic rules. Emits the
     /// chosen route name as a Branch so the engine's existing branch machinery routes downstream.
-    async fn run_router(&self, node: &WorkflowNode, ctx: &mut ExecutionContext) -> Result<NodeResult> {
-        let input_raw = node.config.get("input_var").and_then(|v| v.as_str()).unwrap_or("input");
+    async fn run_router(
+        &self,
+        node: &WorkflowNode,
+        ctx: &mut ExecutionContext,
+    ) -> Result<NodeResult> {
+        let input_raw = node
+            .config
+            .get("input_var")
+            .and_then(|v| v.as_str())
+            .unwrap_or("input");
         let input = Self::resolve_value(input_raw, ctx);
-        let input_str = input.as_str().map(|s| s.to_string()).unwrap_or_else(|| input.to_string());
-        let routes = node.config.get("routes").and_then(|v| v.as_array()).cloned().unwrap_or_default();
-        let route_with_ai = node.config.get("route_with_ai").and_then(|v| v.as_bool()).unwrap_or(true);
+        let input_str = input
+            .as_str()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| input.to_string());
+        let routes = node
+            .config
+            .get("routes")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        let route_with_ai = node
+            .config
+            .get("route_with_ai")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
 
         let names: Vec<String> = routes
             .iter()
@@ -1342,65 +1408,148 @@ impl<'a> WorkflowEngine<'a> {
         let system = "You route an input to exactly one named route. Return JSON {\"route\": \"<name>\"} choosing the single best-matching route name from the list.";
         let user = format!("Input:\n{input_str}\n\nRoutes:\n{conditions_desc}");
         let raw = self.inference.orchestrate(system, &user, true).await?;
-        let parsed: Value = serde_json::from_str(crate::services::inference::strip_fences(&raw)).unwrap_or(Value::Null);
-        let chosen = parsed.get("route").and_then(|v| v.as_str()).map(String::from);
-        let route = chosen.filter(|c| names.contains(c)).unwrap_or_else(|| names[0].clone());
+        let parsed: Value = serde_json::from_str(crate::services::inference::strip_fences(&raw))
+            .unwrap_or(Value::Null);
+        let chosen = parsed
+            .get("route")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        let route = chosen
+            .filter(|c| names.contains(c))
+            .unwrap_or_else(|| names[0].clone());
         Ok(NodeResult::Branch(route))
     }
 
     /// Join Paths: re-merge branches — pass through whichever named branch variable actually ran
     /// (i.e. the first that is present and non-null in ctx.vars).
-    async fn run_join_paths(&self, node: &WorkflowNode, ctx: &mut ExecutionContext) -> Result<NodeResult> {
-        let inputs = node.config.get("inputs").and_then(|v| v.as_str()).unwrap_or("");
+    async fn run_join_paths(
+        &self,
+        node: &WorkflowNode,
+        ctx: &mut ExecutionContext,
+    ) -> Result<NodeResult> {
+        let inputs = node
+            .config
+            .get("inputs")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         let output_key = Self::output_key(node, "joined");
-        for name in inputs.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        for name in inputs
+            .split(',')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+        {
             if let Some(v) = ctx.vars.get(name) {
                 if !v.is_null() {
-                    return Ok(NodeResult::Continue { output_key, value: v.clone() });
+                    return Ok(NodeResult::Continue {
+                        output_key,
+                        value: v.clone(),
+                    });
                 }
             }
         }
-        Ok(NodeResult::Continue { output_key, value: Value::Null })
+        Ok(NodeResult::Continue {
+            output_key,
+            value: Value::Null,
+        })
     }
 
     /// Error Shield: run in a way that a failure of the wrapped input routes to an error output var
     /// instead of failing the run. Here (pre-subflow-wrapping) it validates the input is present;
     /// a null/missing input becomes the error path. Full node-wrapping arrives with Subflows.
-    async fn run_error_shield(&self, node: &WorkflowNode, ctx: &mut ExecutionContext) -> Result<NodeResult> {
-        let input_raw = node.config.get("input_var").and_then(|v| v.as_str()).unwrap_or("input");
+    async fn run_error_shield(
+        &self,
+        node: &WorkflowNode,
+        ctx: &mut ExecutionContext,
+    ) -> Result<NodeResult> {
+        let input_raw = node
+            .config
+            .get("input_var")
+            .and_then(|v| v.as_str())
+            .unwrap_or("input");
         let input = ctx.vars.get(input_raw).cloned();
-        let success_var = node.config.get("success_var").and_then(|v| v.as_str()).unwrap_or("shielded").to_string();
-        let error_var = node.config.get("error_var").and_then(|v| v.as_str()).unwrap_or("shield_error").to_string();
-        let pass_through = node.config.get("pass_inputs_through").and_then(|v| v.as_bool()).unwrap_or(false);
+        let success_var = node
+            .config
+            .get("success_var")
+            .and_then(|v| v.as_str())
+            .unwrap_or("shielded")
+            .to_string();
+        let error_var = node
+            .config
+            .get("error_var")
+            .and_then(|v| v.as_str())
+            .unwrap_or("shield_error")
+            .to_string();
+        let pass_through = node
+            .config
+            .get("pass_inputs_through")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
 
         match input {
-            Some(v) if !v.is_null() => Ok(NodeResult::Continue { output_key: success_var, value: v }),
+            Some(v) if !v.is_null() => Ok(NodeResult::Continue {
+                output_key: success_var,
+                value: v,
+            }),
             other => {
                 let err_val = if pass_through {
                     other.unwrap_or(Value::Null)
                 } else {
                     Value::String(format!("missing input '{input_raw}'"))
                 };
-                Ok(NodeResult::Continue { output_key: error_var, value: err_val })
+                Ok(NodeResult::Continue {
+                    output_key: error_var,
+                    value: err_val,
+                })
             }
         }
     }
 
     /// Ask AI: prompt the model (the professional's trained model when a lora is set).
-    async fn run_ask_ai(&self, node: &WorkflowNode, ctx: &mut ExecutionContext) -> Result<NodeResult> {
-        let prompt_tmpl = node.config.get("prompt").and_then(|v| v.as_str()).unwrap_or("{{input}}");
+    async fn run_ask_ai(
+        &self,
+        node: &WorkflowNode,
+        ctx: &mut ExecutionContext,
+    ) -> Result<NodeResult> {
+        let prompt_tmpl = node
+            .config
+            .get("prompt")
+            .and_then(|v| v.as_str())
+            .unwrap_or("{{input}}");
         let prompt = Self::interpolate(prompt_tmpl, ctx);
-        let system = "You are the professional's assistant. Answer the prompt directly and concisely.";
-        let response = self.inference.worker(system, &prompt, ctx.lora_name.as_deref()).await?;
-        Ok(NodeResult::Continue { output_key: Self::output_key(node, "ai_response"), value: Value::String(response) })
+        let system =
+            "You are the professional's assistant. Answer the prompt directly and concisely.";
+        let response = self
+            .inference
+            .worker(system, &prompt, ctx.lora_name.as_deref())
+            .await?;
+        Ok(NodeResult::Continue {
+            output_key: Self::output_key(node, "ai_response"),
+            value: Value::String(response),
+        })
     }
 
     /// Extract Data: pull a user-defined field schema out of text as structured JSON.
-    async fn run_extract_data(&self, node: &WorkflowNode, ctx: &mut ExecutionContext) -> Result<NodeResult> {
-        let text_raw = node.config.get("text").and_then(|v| v.as_str()).unwrap_or("input");
+    async fn run_extract_data(
+        &self,
+        node: &WorkflowNode,
+        ctx: &mut ExecutionContext,
+    ) -> Result<NodeResult> {
+        let text_raw = node
+            .config
+            .get("text")
+            .and_then(|v| v.as_str())
+            .unwrap_or("input");
         let text = Self::resolve_value(text_raw, ctx);
-        let text_str = text.as_str().map(|s| s.to_string()).unwrap_or_else(|| text.to_string());
-        let fields = node.config.get("fields").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+        let text_str = text
+            .as_str()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| text.to_string());
+        let fields = node
+            .config
+            .get("fields")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
         let schema = fields
             .iter()
             .map(|f| {
@@ -1413,22 +1562,50 @@ impl<'a> WorkflowEngine<'a> {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        let as_list = node.config.get("extract_list").and_then(|v| v.as_bool()).unwrap_or(false);
-        let shape = if as_list { "a JSON array of objects" } else { "a single JSON object" };
+        let as_list = node
+            .config
+            .get("extract_list")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let shape = if as_list {
+            "a JSON array of objects"
+        } else {
+            "a single JSON object"
+        };
         let system = format!(
             "You extract structured data from text. Return {shape} with exactly these fields:\n{schema}\nReturn only JSON."
         );
         let raw = self.inference.orchestrate(&system, &text_str, true).await?;
-        let value: Value = serde_json::from_str(crate::services::inference::strip_fences(&raw)).unwrap_or(Value::Null);
-        Ok(NodeResult::Continue { output_key: Self::output_key(node, "extracted"), value })
+        let value: Value = serde_json::from_str(crate::services::inference::strip_fences(&raw))
+            .unwrap_or(Value::Null);
+        Ok(NodeResult::Continue {
+            output_key: Self::output_key(node, "extracted"),
+            value,
+        })
     }
 
     /// Categorizer: classify input into one of the user's categories.
-    async fn run_categorizer(&self, node: &WorkflowNode, ctx: &mut ExecutionContext) -> Result<NodeResult> {
-        let input_raw = node.config.get("input_var").and_then(|v| v.as_str()).unwrap_or("input");
+    async fn run_categorizer(
+        &self,
+        node: &WorkflowNode,
+        ctx: &mut ExecutionContext,
+    ) -> Result<NodeResult> {
+        let input_raw = node
+            .config
+            .get("input_var")
+            .and_then(|v| v.as_str())
+            .unwrap_or("input");
         let input = Self::resolve_value(input_raw, ctx);
-        let input_str = input.as_str().map(|s| s.to_string()).unwrap_or_else(|| input.to_string());
-        let cats = node.config.get("categories").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+        let input_str = input
+            .as_str()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| input.to_string());
+        let cats = node
+            .config
+            .get("categories")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
         let list = cats
             .iter()
             .map(|c| {
@@ -1440,73 +1617,140 @@ impl<'a> WorkflowEngine<'a> {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        let justify = node.config.get("include_justification").and_then(|v| v.as_bool()).unwrap_or(false);
+        let justify = node
+            .config
+            .get("include_justification")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         let system = format!(
             "You classify input into exactly one category. Return JSON {{\"category\": \"<name>\"{}}}.\nCategories:\n{list}",
             if justify { ", \"justification\": \"<why>\"" } else { "" }
         );
-        let raw = self.inference.orchestrate(&system, &input_str, true).await?;
-        let parsed: Value = serde_json::from_str(crate::services::inference::strip_fences(&raw)).unwrap_or(Value::Null);
+        let raw = self
+            .inference
+            .orchestrate(&system, &input_str, true)
+            .await?;
+        let parsed: Value = serde_json::from_str(crate::services::inference::strip_fences(&raw))
+            .unwrap_or(Value::Null);
         let category = parsed.get("category").cloned().unwrap_or(Value::Null);
         // Also expose justification as a sibling var when present.
         if let Some(j) = parsed.get("justification") {
             ctx.vars.insert("justification".into(), j.clone());
         }
-        Ok(NodeResult::Continue { output_key: Self::output_key(node, "category"), value: category })
+        Ok(NodeResult::Continue {
+            output_key: Self::output_key(node, "category"),
+            value: category,
+        })
     }
 
     /// Scorer: rate an item 0–100 against a rubric.
-    async fn run_scorer(&self, node: &WorkflowNode, ctx: &mut ExecutionContext) -> Result<NodeResult> {
-        let item_raw = node.config.get("item").and_then(|v| v.as_str()).unwrap_or("input");
+    async fn run_scorer(
+        &self,
+        node: &WorkflowNode,
+        ctx: &mut ExecutionContext,
+    ) -> Result<NodeResult> {
+        let item_raw = node
+            .config
+            .get("item")
+            .and_then(|v| v.as_str())
+            .unwrap_or("input");
         let item = Self::resolve_value(item_raw, ctx);
-        let item_str = item.as_str().map(|s| s.to_string()).unwrap_or_else(|| item.to_string());
-        let criteria = node.config.get("criteria").and_then(|v| v.as_str()).unwrap_or("Overall quality: 0-100");
-        let justify = node.config.get("include_justification").and_then(|v| v.as_bool()).unwrap_or(false);
+        let item_str = item
+            .as_str()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| item.to_string());
+        let criteria = node
+            .config
+            .get("criteria")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Overall quality: 0-100");
+        let justify = node
+            .config
+            .get("include_justification")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         let system = format!(
             "You score the item from 0 to 100 against the criteria. Return JSON {{\"score\": <0-100>{}}}\nCriteria: {criteria}",
             if justify { ", \"justification\": \"<why>\"" } else { "" }
         );
         let raw = self.inference.orchestrate(&system, &item_str, true).await?;
-        let parsed: Value = serde_json::from_str(crate::services::inference::strip_fences(&raw)).unwrap_or(Value::Null);
+        let parsed: Value = serde_json::from_str(crate::services::inference::strip_fences(&raw))
+            .unwrap_or(Value::Null);
         let score = parsed.get("score").cloned().unwrap_or(Value::Null);
         if let Some(j) = parsed.get("justification") {
             ctx.vars.insert("justification".into(), j.clone());
         }
-        Ok(NodeResult::Continue { output_key: Self::output_key(node, "score"), value: score })
+        Ok(NodeResult::Continue {
+            output_key: Self::output_key(node, "score"),
+            value: score,
+        })
     }
 
     /// Combine Text: {placeholder} template substitution against ctx.vars.
-    async fn run_combine_text(&self, node: &WorkflowNode, ctx: &mut ExecutionContext) -> Result<NodeResult> {
-        let format = node.config.get("format").and_then(|v| v.as_str()).unwrap_or("");
+    async fn run_combine_text(
+        &self,
+        node: &WorkflowNode,
+        ctx: &mut ExecutionContext,
+    ) -> Result<NodeResult> {
+        let format = node
+            .config
+            .get("format")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         // Combine Text uses single-brace {var}; support both {var} and {{var}}.
         let mut out = format.to_string();
         for (k, v) in &ctx.vars {
-            let rendered = v.as_str().map(|s| s.to_string()).unwrap_or_else(|| v.to_string());
+            let rendered = v
+                .as_str()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| v.to_string());
             out = out.replace(&format!("{{{{{k}}}}}"), &rendered);
             out = out.replace(&format!("{{{k}}}"), &rendered);
         }
-        Ok(NodeResult::Continue { output_key: Self::output_key(node, "combined"), value: Value::String(out) })
+        Ok(NodeResult::Continue {
+            output_key: Self::output_key(node, "combined"),
+            value: Value::String(out),
+        })
     }
 
     /// Read JSON Values: extract dot-notation paths from a JSON string.
-    async fn run_read_json(&self, node: &WorkflowNode, ctx: &mut ExecutionContext) -> Result<NodeResult> {
-        let json_raw = node.config.get("json").and_then(|v| v.as_str()).unwrap_or("");
+    async fn run_read_json(
+        &self,
+        node: &WorkflowNode,
+        ctx: &mut ExecutionContext,
+    ) -> Result<NodeResult> {
+        let json_raw = node
+            .config
+            .get("json")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         let source = Self::resolve_value(json_raw, ctx);
         let parsed: Value = match &source {
             Value::String(s) => serde_json::from_str(s).unwrap_or(Value::Null),
             other => other.clone(),
         };
-        let keys = node.config.get("keys").and_then(|v| v.as_str()).unwrap_or("");
+        let keys = node
+            .config
+            .get("keys")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         let mut result = serde_json::Map::new();
         for key in keys.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()) {
             result.insert(key.to_string(), Self::json_path(&parsed, key));
         }
         let value = if result.len() == 1 {
-            result.into_iter().next().map(|(_, v)| v).unwrap_or(Value::Null)
+            result
+                .into_iter()
+                .next()
+                .map(|(_, v)| v)
+                .unwrap_or(Value::Null)
         } else {
             Value::Object(result)
         };
-        Ok(NodeResult::Continue { output_key: Self::output_key(node, "json_values"), value })
+        Ok(NodeResult::Continue {
+            output_key: Self::output_key(node, "json_values"),
+            value,
+        })
     }
 
     /// Navigate a JSON value by dot notation with array indexing (`a.b.0.c`).
@@ -1515,7 +1759,11 @@ impl<'a> WorkflowEngine<'a> {
         for seg in path.split('.') {
             cur = match cur {
                 Value::Object(m) => m.get(seg).unwrap_or(&Value::Null),
-                Value::Array(a) => seg.parse::<usize>().ok().and_then(|i| a.get(i)).unwrap_or(&Value::Null),
+                Value::Array(a) => seg
+                    .parse::<usize>()
+                    .ok()
+                    .and_then(|i| a.get(i))
+                    .unwrap_or(&Value::Null),
                 _ => &Value::Null,
             };
         }
@@ -1523,19 +1771,38 @@ impl<'a> WorkflowEngine<'a> {
     }
 
     /// Write JSON Value: set a value at a dot path in a JSON object.
-    async fn run_write_json(&self, node: &WorkflowNode, ctx: &mut ExecutionContext) -> Result<NodeResult> {
-        let json_raw = node.config.get("json").and_then(|v| v.as_str()).unwrap_or("{}");
+    async fn run_write_json(
+        &self,
+        node: &WorkflowNode,
+        ctx: &mut ExecutionContext,
+    ) -> Result<NodeResult> {
+        let json_raw = node
+            .config
+            .get("json")
+            .and_then(|v| v.as_str())
+            .unwrap_or("{}");
         let source = Self::resolve_value(json_raw, ctx);
         let mut root: Value = match &source {
             Value::String(s) => serde_json::from_str(s).unwrap_or_else(|_| json!({})),
             other => other.clone(),
         };
-        let key = node.config.get("key").and_then(|v| v.as_str()).unwrap_or("");
-        let val_raw = node.config.get("value").and_then(|v| v.as_str()).unwrap_or("");
+        let key = node
+            .config
+            .get("key")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let val_raw = node
+            .config
+            .get("value")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         let new_val = Self::resolve_value(val_raw, ctx);
         Self::json_set(&mut root, key, new_val);
         let rendered = serde_json::to_string(&root).unwrap_or_else(|_| "{}".into());
-        Ok(NodeResult::Continue { output_key: Self::output_key(node, "json_result"), value: Value::String(rendered) })
+        Ok(NodeResult::Continue {
+            output_key: Self::output_key(node, "json_result"),
+            value: Value::String(rendered),
+        })
     }
 
     /// Set a value at a dot path, creating intermediate objects as needed.
@@ -1565,8 +1832,17 @@ impl<'a> WorkflowEngine<'a> {
     }
 
     /// Call API: generic HTTP call with headers + optional body.
-    async fn run_call_api(&self, node: &WorkflowNode, ctx: &mut ExecutionContext) -> Result<NodeResult> {
-        let method = node.config.get("method").and_then(|v| v.as_str()).unwrap_or("GET").to_uppercase();
+    async fn run_call_api(
+        &self,
+        node: &WorkflowNode,
+        ctx: &mut ExecutionContext,
+    ) -> Result<NodeResult> {
+        let method = node
+            .config
+            .get("method")
+            .and_then(|v| v.as_str())
+            .unwrap_or("GET")
+            .to_uppercase();
         let url = Self::cfg_or_var(node, ctx, "url", "");
         if url.is_empty() {
             return Err(anyhow!("Call API node missing url"));
@@ -1608,18 +1884,34 @@ impl<'a> WorkflowEngine<'a> {
         }
         // Prefer JSON, fall back to text.
         let value = serde_json::from_str::<Value>(&text).unwrap_or(Value::String(text));
-        Ok(NodeResult::Continue { output_key: Self::output_key(node, "api_response"), value })
+        Ok(NodeResult::Continue {
+            output_key: Self::output_key(node, "api_response"),
+            value,
+        })
     }
 
     /// Custom MCP Server: call one tool on an external MCP server (JSON-RPC over HTTP).
-    async fn run_mcp_server(&self, node: &WorkflowNode, ctx: &mut ExecutionContext) -> Result<NodeResult> {
+    async fn run_mcp_server(
+        &self,
+        node: &WorkflowNode,
+        ctx: &mut ExecutionContext,
+    ) -> Result<NodeResult> {
         let server_url = Self::cfg_or_var(node, ctx, "server_url", "");
-        let tool = node.config.get("tool").and_then(|v| v.as_str()).unwrap_or("");
+        let tool = node
+            .config
+            .get("tool")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         if server_url.is_empty() || tool.is_empty() {
             return Err(anyhow!("MCP node requires server_url and tool"));
         }
-        let args_raw = node.config.get("arguments").and_then(|v| v.as_str()).unwrap_or("{}");
-        let arguments: Value = serde_json::from_str(&Self::interpolate(args_raw, ctx)).unwrap_or(json!({}));
+        let args_raw = node
+            .config
+            .get("arguments")
+            .and_then(|v| v.as_str())
+            .unwrap_or("{}");
+        let arguments: Value =
+            serde_json::from_str(&Self::interpolate(args_raw, ctx)).unwrap_or(json!({}));
         let body = json!({
             "jsonrpc": "2.0",
             "id": 1,
@@ -1636,7 +1928,10 @@ impl<'a> WorkflowEngine<'a> {
             .await?;
         // Return the JSON-RPC result payload if present, else the whole envelope.
         let value = resp.get("result").cloned().unwrap_or(resp);
-        Ok(NodeResult::Continue { output_key: Self::output_key(node, "mcp_result"), value })
+        Ok(NodeResult::Continue {
+            output_key: Self::output_key(node, "mcp_result"),
+            value,
+        })
     }
 
     // ── Subflow (workflow-as-node) + Loop mode ────────────────────────────────
@@ -1651,8 +1946,8 @@ impl<'a> WorkflowEngine<'a> {
         let wf = crate::services::workflows::get_workflow(self.db, workflow_id)
             .await
             .map_err(|e| anyhow!("subflow: {e}"))?;
-        let graph: WorkflowGraph = serde_json::from_value(wf.graph)
-            .map_err(|e| anyhow!("subflow graph parse: {e}"))?;
+        let graph: WorkflowGraph =
+            serde_json::from_value(wf.graph).map_err(|e| anyhow!("subflow graph parse: {e}"))?;
         Ok(graph)
     }
 
@@ -1682,7 +1977,11 @@ impl<'a> WorkflowEngine<'a> {
         }
         for (input_name, source) in map {
             let value = match source {
-                Value::String(s) => parent.vars.get(s).cloned().unwrap_or(Value::String(s.clone())),
+                Value::String(s) => parent
+                    .vars
+                    .get(s)
+                    .cloned()
+                    .unwrap_or(Value::String(s.clone())),
                 other => other.clone(),
             };
             vars.insert(input_name.clone(), value);
@@ -1724,7 +2023,11 @@ impl<'a> WorkflowEngine<'a> {
                 .collect();
             if !inputs.is_empty() {
                 inputs
-            } else if let Some(t) = graph.nodes.iter().find(|n| n.node_type == NodeType::Trigger) {
+            } else if let Some(t) = graph
+                .nodes
+                .iter()
+                .find(|n| n.node_type == NodeType::Trigger)
+            {
                 vec![t.id.clone()]
             } else {
                 graph.nodes.iter().map(|n| n.id.clone()).collect()
@@ -1745,7 +2048,11 @@ impl<'a> WorkflowEngine<'a> {
         // If exactly one output, unwrap it; else return the object. If none, return the child's
         // "input" (a subflow with no explicit outputs just passes through).
         let value = if outputs.len() == 1 {
-            outputs.into_iter().next().map(|(_, v)| v).unwrap_or(Value::Null)
+            outputs
+                .into_iter()
+                .next()
+                .map(|(_, v)| v)
+                .unwrap_or(Value::Null)
         } else if outputs.is_empty() {
             child.vars.get("input").cloned().unwrap_or(Value::Null)
         } else {
@@ -1756,7 +2063,11 @@ impl<'a> WorkflowEngine<'a> {
 
     /// Subflow node: run the referenced workflow as a node. With `loop_mode`, fan out over a list
     /// input (bounded concurrency); otherwise run once.
-    async fn run_subflow(&self, node: &WorkflowNode, ctx: &mut ExecutionContext) -> Result<NodeResult> {
+    async fn run_subflow(
+        &self,
+        node: &WorkflowNode,
+        ctx: &mut ExecutionContext,
+    ) -> Result<NodeResult> {
         if ctx.subflow_depth >= MAX_SUBFLOW_DEPTH {
             return Err(anyhow!(
                 "subflow nesting too deep ({}) — a workflow may include itself",
@@ -1773,7 +2084,11 @@ impl<'a> WorkflowEngine<'a> {
         let graph = self.load_subflow_graph(workflow_id).await?;
         let map = Self::subflow_input_map(node);
         let output_key = Self::output_key(node, "subflow_result");
-        let loop_mode = node.config.get("loop_mode").and_then(|v| v.as_bool()).unwrap_or(false);
+        let loop_mode = node
+            .config
+            .get("loop_mode")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
 
         if !loop_mode {
             let seeded = Self::seed_child_vars(&map, ctx);
@@ -1786,15 +2101,33 @@ impl<'a> WorkflowEngine<'a> {
         let max_parallel = node
             .config
             .get("max_parallel")
-            .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
+            .and_then(|v| {
+                v.as_u64()
+                    .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+            })
             .unwrap_or(4)
             .clamp(1, 15) as usize;
-        let error_shield = node.config.get("error_shield").and_then(|v| v.as_bool()).unwrap_or(false);
+        let error_shield = node
+            .config
+            .get("error_shield")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
 
         let results = self
-            .run_loop(&graph, ctx, &map, &item_input_name, list, max_parallel, error_shield)
+            .run_loop(
+                &graph,
+                ctx,
+                &map,
+                &item_input_name,
+                list,
+                max_parallel,
+                error_shield,
+            )
             .await?;
-        Ok(NodeResult::Continue { output_key, value: Value::Array(results) })
+        Ok(NodeResult::Continue {
+            output_key,
+            value: Value::Array(results),
+        })
     }
 
     /// Determine the list to fan out over in loop mode, and the subflow-input name each item is
@@ -1813,7 +2146,11 @@ impl<'a> WorkflowEngine<'a> {
         }
         // Fallback: the "input" var if it's an array.
         if let Some(Value::Array(items)) = ctx.vars.get("input") {
-            let name = map.keys().next().cloned().unwrap_or_else(|| "input".to_string());
+            let name = map
+                .keys()
+                .next()
+                .cloned()
+                .unwrap_or_else(|| "input".to_string());
             return (items.clone(), name);
         }
         (Vec::new(), "input".to_string())
@@ -2863,6 +3200,11 @@ impl<'a> WorkflowEngine<'a> {
             persona_prompt: ctx.persona_prompt.clone(),
             cf_finetune_id: ctx.lora_name.clone(),
             github_token,
+            anthropic_api_key: crate::services::execution::agent_anthropic_key(
+                self.db,
+                ctx.agent_id,
+            )
+            .await,
             taste_token,
             api_base_url,
         };
@@ -3191,6 +3533,11 @@ impl<'a> WorkflowEngine<'a> {
             persona_prompt: ctx.persona_prompt.clone(),
             cf_finetune_id: ctx.lora_name.clone(),
             github_token,
+            anthropic_api_key: crate::services::execution::agent_anthropic_key(
+                self.db,
+                ctx.agent_id,
+            )
+            .await,
             taste_token,
             api_base_url,
         };
@@ -4437,7 +4784,10 @@ mod tests {
 
     #[test]
     fn seed_child_vars_resolves_vars_and_literals() {
-        let ctx = test_ctx(vec![("current_url", json!("https://x")), ("input", json!("root"))]);
+        let ctx = test_ctx(vec![
+            ("current_url", json!("https://x")),
+            ("input", json!("root")),
+        ]);
         let mut map = serde_json::Map::new();
         map.insert("url".into(), json!("current_url")); // resolves to a var
         map.insert("mode".into(), json!(42)); // literal (non-string)

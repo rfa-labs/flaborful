@@ -27,7 +27,10 @@ pub fn router() -> Router<AppState> {
         .route("/:id/reset", post(reset_agent))
         .route("/:id/execution", patch(set_execution))
         .route("/:id/persona", patch(set_persona))
-        .route("/:id/tool-policy", get(get_tool_policy).put(set_tool_policy))
+        .route(
+            "/:id/tool-policy",
+            get(get_tool_policy).put(set_tool_policy),
+        )
 }
 
 /// GET /agents/:id/tool-policy — the agent's HITL tool-approval policy (approve-before-write).
@@ -101,6 +104,11 @@ struct SetExecutionBody {
     /// claude_code | codex | custom
     agent_runtime: String,
     runtime_spec: Option<serde_json::Value>,
+    /// The professional's own Anthropic/Claude API key. When present and non-empty, it is
+    /// encrypted and stored (replacing any prior key). Absent/None => leave the stored key
+    /// unchanged. An explicit empty string => clear the key.
+    #[serde(default)]
+    anthropic_api_key: Option<String>,
 }
 
 /// PATCH /agents/:id/execution — set the professional's default execution backend + runtime.
@@ -133,6 +141,31 @@ async fn set_execution(
     )
     .execute(&state.db)
     .await?;
+
+    // Key update is separate from the always-applied config above so an omitted key never wipes a
+    // stored one. None = untouched; Some("") = clear; Some(key) = encrypt + store.
+    match body.anthropic_api_key {
+        None => {}
+        Some(key) if key.trim().is_empty() => {
+            sqlx::query!(
+                "UPDATE agents SET anthropic_api_key_enc = NULL, updated_at = NOW() WHERE id = $1",
+                id,
+            )
+            .execute(&state.db)
+            .await?;
+        }
+        Some(key) => {
+            let enc = crate::services::crypto::encrypt(key.trim())?;
+            sqlx::query!(
+                "UPDATE agents SET anthropic_api_key_enc = $1, updated_at = NOW() WHERE id = $2",
+                enc,
+                id,
+            )
+            .execute(&state.db)
+            .await?;
+        }
+    }
+
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 

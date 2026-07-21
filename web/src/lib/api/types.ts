@@ -38,6 +38,8 @@ export interface Agent {
   execution_backend?: 'managed' | 'sprite';
   agent_runtime?: 'claude_code' | 'codex' | 'custom';
   runtime_spec?: Record<string, unknown> | null;
+  /** Presence flag only — the raw Anthropic key is never sent to the client. */
+  anthropic_key_set?: boolean;
   created_at: string;
 }
 

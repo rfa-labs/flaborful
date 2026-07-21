@@ -78,6 +78,34 @@ impl ExecutionBackends {
     }
 }
 
+/// Fetch and decrypt the professional's own Anthropic API key for an agent, for use in a
+/// `TaskBrief`. Returns `None` when no key is on file. A decrypt failure is logged and treated as
+/// "no key" rather than failing the run (a bad key on file should surface as the Managed
+/// "add your key" skip, not a hard error).
+pub async fn agent_anthropic_key(db: &PgPool, agent_id: Uuid) -> Option<String> {
+    let enc = sqlx::query_scalar!(
+        "SELECT anthropic_api_key_enc FROM agents WHERE id = $1",
+        agent_id
+    )
+    .fetch_optional(db)
+    .await
+    .ok()
+    .flatten()
+    .flatten()?;
+    match crate::services::crypto::decrypt(&enc) {
+        Ok(key) if !key.trim().is_empty() => Some(key),
+        Ok(_) => None,
+        Err(e) => {
+            tracing::warn!(
+                "failed to decrypt Anthropic key for agent {}: {}",
+                agent_id,
+                e
+            );
+            None
+        }
+    }
+}
+
 /// Which backend runs a task's work, and (for Sprite) which agent runtime drives it.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -156,6 +184,10 @@ pub struct TaskBrief {
     /// GitHub access token (owner OAuth) for clone/push. For Managed Agents this rides the
     /// git proxy and never enters the container.
     pub github_token: Option<String>,
+    /// The professional's own (decrypted) Anthropic/Claude API key. Required by the Managed
+    /// backend (no fallback — the run bills to the professional). The Sprite backend prefers it
+    /// and falls back to the server's `ANTHROPIC_API_KEY`. `None`/empty => not on file.
+    pub anthropic_api_key: Option<String>,
     /// Per-task token authenticating the agent's calls back to the shared taste endpoint.
     pub taste_token: String,
     /// Base URL of this backend (for building the taste callback URL).

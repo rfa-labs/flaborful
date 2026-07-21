@@ -249,7 +249,9 @@ async fn list_runs_for_agent(
     Path(agent_id): Path<Uuid>,
 ) -> AppResult<Json<Vec<svc::RunSummary>>> {
     authz::require_agent_owner(&state.db, auth.user_id, agent_id).await?;
-    Ok(Json(svc::list_runs_for_agent(&state.db, agent_id, 100).await?))
+    Ok(Json(
+        svc::list_runs_for_agent(&state.db, agent_id, 100).await?,
+    ))
 }
 
 /// GET /tasks/:id/node-executions — per-node execution records for the DAG inspector.

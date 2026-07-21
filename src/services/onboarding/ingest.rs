@@ -190,8 +190,11 @@ pub fn spawn_ingestion(
             if is_cancelled(owner_id) {
                 tracing::info!("ingestion cancelled for {owner_id} — stopping before {repo}");
                 let sink = IngestionSink::new(db.clone(), owner, repo.clone());
-                sink.status("failed", &format!("Cancelled before {repo} (stopped by request)"))
-                    .await;
+                sink.status(
+                    "failed",
+                    &format!("Cancelled before {repo} (stopped by request)"),
+                )
+                .await;
                 break;
             }
             // Resume: skip a repo that already has notes in the vault (unless `force`). The
@@ -273,9 +276,7 @@ async fn ingest_repo(
     // company-scoped token with no principal.
     let (token, persona_prompt, cf_finetune_id) = match owner {
         VaultOwner::Agent(agent_id) => {
-            let (persona, cf) = principal
-                .cloned()
-                .unwrap_or_else(|| (String::new(), None));
+            let (persona, cf) = principal.cloned().unwrap_or_else(|| (String::new(), None));
             let token = crate::services::execution::taste::mint_agent_token(
                 db,
                 agent_id,
@@ -312,6 +313,14 @@ async fn ingest_repo(
         persona_prompt,
         cf_finetune_id,
         github_token,
+        // Ingestion runs on Managed Agents, which now bills to the professional's own key. Only an
+        // Agent owner has one; a Company vault ingestion has no per-agent key (will skip if unset).
+        anthropic_api_key: match owner {
+            VaultOwner::Agent(agent_id) => {
+                crate::services::execution::agent_anthropic_key(db, agent_id).await
+            }
+            VaultOwner::Company(_) => None,
+        },
         taste_token: token.clone(),
         api_base_url,
     };
@@ -342,8 +351,12 @@ async fn ingest_repo(
             // Report the authoritative vault count, not the event tally (which double-counts on
             // agent retries within a run).
             let count = sink.vault_note_count().await;
-            sink.status_with_count("done", &format!("Finished {repo} — {count} notes written"), count)
-                .await;
+            sink.status_with_count(
+                "done",
+                &format!("Finished {repo} — {count} notes written"),
+                count,
+            )
+            .await;
         }
         Err(e) => {
             sink.status("failed", &format!("Failed on {repo}: {e}"))

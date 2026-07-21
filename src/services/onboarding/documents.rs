@@ -62,9 +62,20 @@ fn doc_slug(source: &str, title: &str) -> String {
         .chars()
         .map(|c| if c.is_alphanumeric() { c } else { '-' })
         .collect::<String>();
-    let cleaned = base.split('-').filter(|s| !s.is_empty()).collect::<Vec<_>>().join("-");
-    let short = if cleaned.len() > 60 { &cleaned[..60] } else { &cleaned };
-    format!("{source}-{}", if short.is_empty() { "untitled" } else { short })
+    let cleaned = base
+        .split('-')
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+    let short = if cleaned.len() > 60 {
+        &cleaned[..60]
+    } else {
+        &cleaned
+    };
+    format!(
+        "{source}-{}",
+        if short.is_empty() { "untitled" } else { short }
+    )
 }
 
 /// Distill fetched docs into vault notes for the owner. Best-effort per doc. `principal` is the
@@ -134,9 +145,21 @@ pub async fn ingest_documents(
             repo: Some(source.to_string()),
             job_id: None,
         };
-        if vault::upsert_note(db, qdrant, inference, note).await.is_ok() {
+        if vault::upsert_note(db, qdrant, inference, note)
+            .await
+            .is_ok()
+        {
             written += 1;
-            event(db, owner, source, "note", None, &format!("[note] {}", doc.title), written).await;
+            event(
+                db,
+                owner,
+                source,
+                "note",
+                None,
+                &format!("[note] {}", doc.title),
+                written,
+            )
+            .await;
         }
     }
 
@@ -192,7 +215,10 @@ pub async fn fetch_google_docs(access_token: &str, max_docs: usize) -> Result<Ve
         .get(DRIVE_FILES)
         .bearer_auth(access_token)
         .query(&[
-            ("q", "mimeType='application/vnd.google-apps.document' and trashed=false"),
+            (
+                "q",
+                "mimeType='application/vnd.google-apps.document' and trashed=false",
+            ),
             ("orderBy", "modifiedTime desc"),
             ("pageSize", "25"),
             ("fields", "files(id,name)"),

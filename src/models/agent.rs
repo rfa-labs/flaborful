@@ -31,8 +31,28 @@ pub struct Agent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[sqlx(default)]
     pub runtime_spec: Option<JsonValue>, // custom-runtime template (install/MCP/invoke)
+    /// The professional's own Anthropic/Claude API key, encrypted at rest (AES-GCM via
+    /// CREDENTIAL_KEY). Required for the Managed backend; optional for Sprite. Never serialized
+    /// to the client — the API exposes only the `anthropic_key_set` presence flag below.
+    #[serde(skip_serializing, default)]
+    #[sqlx(default)]
+    pub anthropic_api_key_enc: Option<String>,
+    /// Client-facing presence flag: true iff a key is on file. Serialize-only (never a real
+    /// column, never accepted from the client); computed from `anthropic_api_key_enc`.
+    #[serde(skip_deserializing, default)]
+    #[sqlx(skip)]
+    pub anthropic_key_set: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+impl Agent {
+    /// Populate the client-facing `anthropic_key_set` flag from the encrypted column. Call before
+    /// returning an agent to a client so the UI can show "key on file" without ever seeing the key.
+    pub fn with_key_flag(mut self) -> Self {
+        self.anthropic_key_set = self.anthropic_api_key_enc.is_some();
+        self
+    }
 }
 
 fn default_backend() -> String {

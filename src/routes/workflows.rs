@@ -100,7 +100,11 @@ async fn clone_workflow(
 
 /// The by-id routes don't carry the agent in the path, so resolve the workflow first and
 /// authorize against the agent it belongs to.
-async fn authorize_workflow(state: &AppState, user_id: Uuid, workflow_id: Uuid) -> AppResult<Workflow> {
+async fn authorize_workflow(
+    state: &AppState,
+    user_id: Uuid,
+    workflow_id: Uuid,
+) -> AppResult<Workflow> {
     let wf = svc::get_workflow(&state.db, workflow_id).await?;
     authz::require_agent_owner(&state.db, user_id, wf.agent_id).await?;
     Ok(wf)

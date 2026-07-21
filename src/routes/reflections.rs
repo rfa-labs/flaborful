@@ -53,10 +53,15 @@ async fn apply(
     Path((agent_id, proposal_id)): Path<(Uuid, Uuid)>,
 ) -> AppResult<Json<serde_json::Value>> {
     authz::require_agent_owner(&state.db, auth.user_id, agent_id).await?;
-    let outcome =
-        reflections::apply_proposal(&state.db, &state.qdrant, &state.inference, agent_id, proposal_id)
-            .await
-            .map_err(AppError::Internal)?;
+    let outcome = reflections::apply_proposal(
+        &state.db,
+        &state.qdrant,
+        &state.inference,
+        agent_id,
+        proposal_id,
+    )
+    .await
+    .map_err(AppError::Internal)?;
     Ok(Json(serde_json::json!({ "ok": true, "outcome": outcome })))
 }
 

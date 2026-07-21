@@ -278,7 +278,12 @@ async fn ingest_google_docs(
     )
     .fetch_optional(&state.db)
     .await?;
-    let principal = row.map(|r| (r.persona_system_prompt.unwrap_or_default(), r.cf_finetune_id));
+    let principal = row.map(|r| {
+        (
+            r.persona_system_prompt.unwrap_or_default(),
+            r.cf_finetune_id,
+        )
+    });
 
     let db = state.db.clone();
     let qdrant = state.qdrant.clone();
@@ -289,7 +294,13 @@ async fn ingest_google_docs(
         match documents::fetch_google_docs(&token, 15).await {
             Ok(docs) if !docs.is_empty() => {
                 let _ = documents::ingest_documents(
-                    &db, &qdrant, &inference, owner, principal, "google_docs", docs,
+                    &db,
+                    &qdrant,
+                    &inference,
+                    owner,
+                    principal,
+                    "google_docs",
+                    docs,
                 )
                 .await;
             }
@@ -736,8 +747,12 @@ async fn lora_complete(
     .is_some();
 
     if !claimed {
-        tracing::info!("RunPod webhook for agent {agent_id} ignored (already claimed by a prior callback)");
-        return Ok(Json(serde_json::json!({ "ok": true, "deduplicated": true })));
+        tracing::info!(
+            "RunPod webhook for agent {agent_id} ignored (already claimed by a prior callback)"
+        );
+        return Ok(Json(
+            serde_json::json!({ "ok": true, "deduplicated": true }),
+        ));
     }
 
     // Now do the best-effort CF upload + persist the finetune id. The agent is ALREADY ready, so
@@ -746,7 +761,9 @@ async fn lora_complete(
         crate::services::lora_training::handle_training_complete(&state.db, agent_id, adapter_key)
             .await
     {
-        tracing::error!("CF upload failed for agent {agent_id} (agent already marked ready): {e:?}");
+        tracing::error!(
+            "CF upload failed for agent {agent_id} (agent already marked ready): {e:?}"
+        );
     }
 
     // Notify the owner — best-effort. If this errors (e.g. duplicate notification from a

@@ -172,8 +172,7 @@ async fn upload_portfolio(
     let bytes = bytes.ok_or_else(|| AppError::BadRequest("no 'file' field in upload".into()))?;
 
     // Extract text: PDF via pdf-extract (CPU-bound → spawn_blocking), else treat as UTF-8 text.
-    let is_pdf = filename.to_lowercase().ends_with(".pdf")
-        || bytes.starts_with(b"%PDF");
+    let is_pdf = filename.to_lowercase().ends_with(".pdf") || bytes.starts_with(b"%PDF");
     let text = if is_pdf {
         let data = bytes.to_vec();
         tokio::task::spawn_blocking(move || pdf_extract::extract_text_from_mem(&data))
@@ -204,7 +203,12 @@ async fn upload_portfolio(
     )
     .fetch_optional(&state.db)
     .await?
-    .map(|r| (r.persona_system_prompt.unwrap_or_default(), r.cf_finetune_id));
+    .map(|r| {
+        (
+            r.persona_system_prompt.unwrap_or_default(),
+            r.cf_finetune_id,
+        )
+    });
 
     let written = crate::services::onboarding::documents::ingest_documents(
         &state.db,
@@ -488,10 +492,14 @@ async fn reindex_agent_route(
         vault::backfill_from_qdrant(&state.db, &state.qdrant, &state.inference, agent_id)
             .await
             .map_err(AppError::Internal)?;
-    let reindexed =
-        vault::reindex_owner(&state.db, &state.qdrant, &state.inference, VaultOwner::Agent(agent_id))
-            .await
-            .map_err(AppError::Internal)?;
+    let reindexed = vault::reindex_owner(
+        &state.db,
+        &state.qdrant,
+        &state.inference,
+        VaultOwner::Agent(agent_id),
+    )
+    .await
+    .map_err(AppError::Internal)?;
     Ok(Json(
         serde_json::json!({ "backfilled": backfilled, "reindexed": reindexed }),
     ))
@@ -509,7 +517,9 @@ async fn repair_links_route(
     let links_repaired = vault::repair_related_links(&state.db, VaultOwner::Agent(agent_id))
         .await
         .map_err(AppError::Internal)?;
-    Ok(Json(serde_json::json!({ "links_repaired": links_repaired })))
+    Ok(Json(
+        serde_json::json!({ "links_repaired": links_repaired }),
+    ))
 }
 
 #[derive(Serialize)]

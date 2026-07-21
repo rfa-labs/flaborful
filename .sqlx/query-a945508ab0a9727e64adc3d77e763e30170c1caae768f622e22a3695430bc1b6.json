@@ -22,7 +22,11 @@
             "kind": {
               "Enum": [
                 "github",
-                "google"
+                "google",
+                "notion",
+                "slack",
+                "linear",
+                "jira"
               ]
             }
           }

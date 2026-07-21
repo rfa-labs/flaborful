@@ -979,7 +979,7 @@
           <h2 class="font-semibold mb-1">Work environment & access</h2>
           <p class="text-sm text-sand-500 mb-4">
             How the agent's machine is set up so it can do and verify the work — the same kinds of
-            access you'd give a contractor. Used when this job's agent runs on a managed sprite.
+            access you'd give a contractor. Used when this job's agent runs on flaborful sandboxes.
           </p>
 
           <div class="space-y-3">

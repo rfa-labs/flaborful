@@ -372,7 +372,11 @@ pub fn manifests() -> Vec<NodeManifest> {
             FieldSpec::boolean("output_blank", "Output blank when filtered out").advanced(),
             output_var("filtered_output"),
         ],
-        outputs: vec![PortSpec::new("filtered_output", "Filtered Output", PortType::Any)],
+        outputs: vec![PortSpec::new(
+            "filtered_output",
+            "Filtered Output",
+            PortType::Any,
+        )],
     });
     m.push(NodeManifest {
         node_type: "router",
@@ -387,9 +391,8 @@ pub fn manifests() -> Vec<NodeManifest> {
             FieldSpec::text("input_var", "Input to evaluate")
                 .required()
                 .dynamic(),
-            FieldSpec::boolean("route_with_ai", "Route with AI").help(
-                "AI interprets the input to pick a route; off = deterministic rule matching",
-            ),
+            FieldSpec::boolean("route_with_ai", "Route with AI")
+                .help("AI interprets the input to pick a route; off = deterministic rule matching"),
             FieldSpec::repeater(
                 "routes",
                 "Routes",
@@ -432,9 +435,7 @@ pub fn manifests() -> Vec<NodeManifest> {
         loopable: true,
         version: 1,
         inputs: vec![
-            FieldSpec::text("input_var", "Input")
-                .required()
-                .dynamic(),
+            FieldSpec::text("input_var", "Input").required().dynamic(),
             FieldSpec::boolean("pass_inputs_through", "Pass inputs through on error")
                 .help("Send the original input to the error path (to log/retry failed items)"),
             FieldSpec::text("success_var", "Success output variable").placeholder("shielded"),
@@ -654,7 +655,11 @@ pub fn manifests() -> Vec<NodeManifest> {
         version: 1,
         inputs: vec![
             FieldSpec::text("input_var", "Input variable").placeholder("llm_output"),
-            FieldSpec::enumeration("format", "Format", vec!["markdown", "json", "email", "plain"]),
+            FieldSpec::enumeration(
+                "format",
+                "Format",
+                vec!["markdown", "json", "email", "plain"],
+            ),
             output_var("formatted_output"),
         ],
         outputs: vec![PortSpec::new(
@@ -691,7 +696,9 @@ pub fn manifests() -> Vec<NodeManifest> {
         loopable: true,
         version: 1,
         inputs: vec![
-            FieldSpec::textarea("json", "JSON string").required().dynamic(),
+            FieldSpec::textarea("json", "JSON string")
+                .required()
+                .dynamic(),
             FieldSpec::text("keys", "Keys (comma-separated)")
                 .required()
                 .placeholder("data.author, items.0.id"),
@@ -710,7 +717,9 @@ pub fn manifests() -> Vec<NodeManifest> {
         version: 1,
         inputs: vec![
             FieldSpec::textarea("json", "JSON string").dynamic(),
-            FieldSpec::text("key", "Key (dot path)").required().placeholder("data.status"),
+            FieldSpec::text("key", "Key (dot path)")
+                .required()
+                .placeholder("data.status"),
             FieldSpec::text("value", "Value").dynamic(),
             output_var("json_result"),
         ],
@@ -730,7 +739,11 @@ pub fn manifests() -> Vec<NodeManifest> {
                 .required()
                 .placeholder("https://api.example.com/...")
                 .dynamic(),
-            FieldSpec::enumeration("method", "Method", vec!["GET", "POST", "PUT", "PATCH", "DELETE"]),
+            FieldSpec::enumeration(
+                "method",
+                "Method",
+                vec!["GET", "POST", "PUT", "PATCH", "DELETE"],
+            ),
             output_var("http_response"),
         ],
         outputs: vec![PortSpec::new("http_response", "Response", PortType::Text)],
@@ -745,8 +758,12 @@ pub fn manifests() -> Vec<NodeManifest> {
         loopable: true,
         version: 1,
         inputs: vec![
-            FieldSpec::enumeration("method", "Method", vec!["GET", "POST", "PUT", "PATCH", "DELETE"])
-                .required(),
+            FieldSpec::enumeration(
+                "method",
+                "Method",
+                vec!["GET", "POST", "PUT", "PATCH", "DELETE"],
+            )
+            .required(),
             FieldSpec::text("url", "URL")
                 .required()
                 .placeholder("https://api.example.com/v1/resource")
@@ -760,7 +777,11 @@ pub fn manifests() -> Vec<NodeManifest> {
                 .visible_when("method", "POST"),
             output_var("api_response"),
         ],
-        outputs: vec![PortSpec::new("api_response", "API Response", PortType::Text)],
+        outputs: vec![PortSpec::new(
+            "api_response",
+            "API Response",
+            PortType::Text,
+        )],
     });
 
     // ── MCP ──────────────────────────────────────────────────────────────────────────────────
@@ -797,7 +818,8 @@ pub fn manifests() -> Vec<NodeManifest> {
         loopable: false,
         version: 1,
         inputs: vec![
-            FieldSpec::enumeration("action", "Action", vec!["fetch_diff", "post_comment"]).required(),
+            FieldSpec::enumeration("action", "Action", vec!["fetch_diff", "post_comment"])
+                .required(),
             output_var("diff"),
         ],
         outputs: vec![PortSpec::new("diff", "Output", PortType::Text)],
@@ -812,7 +834,9 @@ pub fn manifests() -> Vec<NodeManifest> {
         loopable: false,
         version: 1,
         inputs: vec![
-            FieldSpec::text("diff_var", "Diff variable").placeholder("diff").dynamic(),
+            FieldSpec::text("diff_var", "Diff variable")
+                .placeholder("diff")
+                .dynamic(),
             output_var("diff_analysis"),
         ],
         outputs: vec![PortSpec::new("diff_analysis", "Analysis", PortType::Text)],
@@ -827,7 +851,9 @@ pub fn manifests() -> Vec<NodeManifest> {
         loopable: false,
         version: 1,
         inputs: vec![
-            FieldSpec::text("input_var", "Input variable").placeholder("input").dynamic(),
+            FieldSpec::text("input_var", "Input variable")
+                .placeholder("input")
+                .dynamic(),
             output_var("parsed_trace"),
         ],
         outputs: vec![PortSpec::new("parsed_trace", "Parsed", PortType::Any)],
@@ -884,15 +910,22 @@ pub fn manifests() -> Vec<NodeManifest> {
             FieldSpec::textarea("task", "Task for the agent")
                 .placeholder("Describe the change (or leave blank to use task_var)"),
             FieldSpec::text("task_var", "Task variable").placeholder("input"),
-            FieldSpec::textarea("instructions", "Agent instructions")
-                .placeholder("e.g. Consult the principal on design decisions. Write and run tests."),
-            FieldSpec::text("repo", "Repo (owner/name)").placeholder("inherits from ctx.vars[repo]"),
+            FieldSpec::textarea("instructions", "Agent instructions").placeholder(
+                "e.g. Consult the principal on design decisions. Write and run tests.",
+            ),
+            FieldSpec::text("repo", "Repo (owner/name)")
+                .placeholder("inherits from ctx.vars[repo]"),
             FieldSpec::text("base_branch", "Base branch").placeholder("main"),
             FieldSpec::text("branch", "Work branch").placeholder("auto: flaborful/task-…"),
-            FieldSpec::enumeration("backend", "Backend override", vec!["managed", "sprite"]).advanced(),
+            FieldSpec::enumeration("backend", "Backend override", vec!["managed", "sprite"])
+                .advanced(),
             output_var("implementation"),
         ],
-        outputs: vec![PortSpec::new("implementation", "Implementation", PortType::Any)],
+        outputs: vec![PortSpec::new(
+            "implementation",
+            "Implementation",
+            PortType::Any,
+        )],
     });
     m.push(NodeManifest {
         node_type: "sprite_command",
@@ -907,7 +940,9 @@ pub fn manifests() -> Vec<NodeManifest> {
             FieldSpec::textarea("command", "Command")
                 .placeholder("e.g. npm run build (or leave blank to use command_var)"),
             FieldSpec::text("command_var", "Command variable").placeholder("command"),
-            FieldSpec::number("timeout_s", "Timeout (seconds)").placeholder("300").advanced(),
+            FieldSpec::number("timeout_s", "Timeout (seconds)")
+                .placeholder("300")
+                .advanced(),
             output_var("command_result"),
         ],
         outputs: vec![PortSpec::new("command_result", "Result", PortType::Text)],
@@ -923,7 +958,9 @@ pub fn manifests() -> Vec<NodeManifest> {
         version: 1,
         inputs: vec![
             FieldSpec::text("test_command", "Test command").placeholder("npm test"),
-            FieldSpec::number("timeout_s", "Timeout (seconds)").placeholder("600").advanced(),
+            FieldSpec::number("timeout_s", "Timeout (seconds)")
+                .placeholder("600")
+                .advanced(),
             output_var("test_results"),
         ],
         outputs: vec![PortSpec::new("test_results", "Results", PortType::Text)],
@@ -941,7 +978,9 @@ pub fn manifests() -> Vec<NodeManifest> {
             FieldSpec::textarea("message", "Commit message")
                 .placeholder("Changes by your Flaborful agent (or use message_var)"),
             FieldSpec::text("message_var", "Message variable").placeholder("commit_message"),
-            FieldSpec::text("add_paths", "Paths to stage").placeholder("-A").advanced(),
+            FieldSpec::text("add_paths", "Paths to stage")
+                .placeholder("-A")
+                .advanced(),
             output_var("commit_result"),
         ],
         outputs: vec![PortSpec::new("commit_result", "Result", PortType::Text)],
@@ -975,7 +1014,9 @@ pub fn manifests() -> Vec<NodeManifest> {
             FieldSpec::text("test_command", "Test command").placeholder("npm test"),
             FieldSpec::text("lint_command", "Lint command").placeholder("npm run lint"),
             FieldSpec::number("max_retries", "Max fix attempts").placeholder("2"),
-            FieldSpec::number("timeout_s", "Timeout (seconds)").placeholder("600").advanced(),
+            FieldSpec::number("timeout_s", "Timeout (seconds)")
+                .placeholder("600")
+                .advanced(),
             output_var("gate_result"),
         ],
         outputs: vec![PortSpec::new("gate_result", "Result", PortType::Any)],
@@ -990,7 +1031,8 @@ pub fn manifests() -> Vec<NodeManifest> {
         loopable: false,
         version: 1,
         inputs: vec![
-            FieldSpec::text("repo", "Repo (owner/name)").placeholder("inherits from ctx.vars[repo]"),
+            FieldSpec::text("repo", "Repo (owner/name)")
+                .placeholder("inherits from ctx.vars[repo]"),
             FieldSpec::text("source_var", "Branch source variable").placeholder("push_result"),
             FieldSpec::text("base", "Base branch").placeholder("main"),
             FieldSpec::text("title", "PR title").placeholder("Changes by your Flaborful agent"),
@@ -1054,7 +1096,9 @@ pub fn validate_config(
                 }
             }
             FieldType::Number => {
-                let n = value.as_f64().or_else(|| value.as_str().and_then(|s| s.parse().ok()));
+                let n = value
+                    .as_f64()
+                    .or_else(|| value.as_str().and_then(|s| s.parse().ok()));
                 match n {
                     None => problems.push(format!("{}: expected a number", field.key)),
                     Some(n) => {
@@ -1087,7 +1131,11 @@ mod tests {
         let all = manifests();
         let mut seen = std::collections::HashSet::new();
         for m in &all {
-            assert!(seen.insert(m.node_type), "duplicate node_type: {}", m.node_type);
+            assert!(
+                seen.insert(m.node_type),
+                "duplicate node_type: {}",
+                m.node_type
+            );
             // serialization must not panic
             serde_json::to_value(m).unwrap();
         }

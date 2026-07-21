@@ -282,9 +282,15 @@ impl ExecutionBackend for SpriteBackend {
                 .await;
         }
 
-        // Drive the agent headless. ANTHROPIC_API_KEY is needed for the coding model; pass it
-        // through from the backend env, alongside the company's test-env env (cloud creds, etc.).
-        let anthropic_key = std::env::var("ANTHROPIC_API_KEY").unwrap_or_default();
+        // Drive the agent headless. ANTHROPIC_API_KEY is needed for the coding model. Prefer the
+        // professional's own key; fall back to the server key (the premium "run on ours" path).
+        // Injected alongside the company's test-env env (cloud creds, etc.).
+        let anthropic_key = brief
+            .anthropic_api_key
+            .as_deref()
+            .filter(|k| !k.trim().is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| std::env::var("ANTHROPIC_API_KEY").unwrap_or_default());
         let mut env = vec![("ANTHROPIC_API_KEY".to_string(), anthropic_key)];
         env.extend(provisioning.env.iter().cloned());
         let cmd = runtime.invoke_command(REPO_DIR, brief);

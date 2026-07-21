@@ -109,7 +109,10 @@ async fn gather_signals(db: &PgPool, agent_id: Uuid) -> Result<Signals> {
         let grade = r.eval_grade.as_deref().unwrap_or("ungraded");
         let summary = r.eval_summary.as_deref().unwrap_or("");
         let status = r.status.as_deref().unwrap_or("?");
-        lines.push(format!("- task {} [{status}] grade={grade} {summary}", r.task_id));
+        lines.push(format!(
+            "- task {} [{status}] grade={grade} {summary}",
+            r.task_id
+        ));
     }
     if !corrections.is_empty() {
         lines.push("\nRecent owner corrections:".to_string());
@@ -169,7 +172,10 @@ async fn propose(
     let avoid = if existing.is_empty() {
         String::new()
     } else {
-        format!("\n\nDo NOT propose anything overlapping these existing items:\n- {}", existing.join("\n- "))
+        format!(
+            "\n\nDo NOT propose anything overlapping these existing items:\n- {}",
+            existing.join("\n- ")
+        )
     };
     let system = format!(
         "You review an AI professional-agent's recent work and propose at most 3 HIGH-CONFIDENCE \
@@ -185,23 +191,44 @@ async fn propose(
     );
     let user = format!("Recent activity:\n{}", signals.digest);
     let raw = inference.orchestrate(&system, &user, true).await?;
-    let parsed: Value = serde_json::from_str(crate::services::inference::strip_fences(&raw)).unwrap_or(json!({}));
+    let parsed: Value =
+        serde_json::from_str(crate::services::inference::strip_fences(&raw)).unwrap_or(json!({}));
 
-    let arr = parsed.get("proposals").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    let arr = parsed
+        .get("proposals")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
     let mut out = Vec::new();
     for p in arr.into_iter().take(3) {
-        let kind = p.get("kind").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        if !matches!(kind.as_str(), "new_skill" | "instruction_update" | "skill_fix" | "tool_access") {
+        let kind = p
+            .get("kind")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        if !matches!(
+            kind.as_str(),
+            "new_skill" | "instruction_update" | "skill_fix" | "tool_access"
+        ) {
             continue;
         }
-        let title = p.get("title").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+        let title = p
+            .get("title")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
         if title.is_empty() {
             continue;
         }
         out.push(Proposal {
             kind,
             title,
-            rationale: p.get("rationale").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            rationale: p
+                .get("rationale")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
             payload: p.get("payload").cloned().unwrap_or(json!({})),
         });
     }
@@ -273,8 +300,16 @@ pub async fn apply_proposal(
         "new_skill" => {
             let owner = crate::services::vault::VaultOwner::Agent(agent_id);
             let args = row.payload.clone();
-            crate::services::vault::handle_tool(db, qdrant, inference, owner, &[], "write_skill", &args)
-                .await?
+            crate::services::vault::handle_tool(
+                db,
+                qdrant,
+                inference,
+                owner,
+                &[],
+                "write_skill",
+                &args,
+            )
+            .await?
         }
         "instruction_update" => {
             let addition = row
@@ -294,10 +329,12 @@ pub async fn apply_proposal(
         _ => "Acknowledged.".to_string(),
     };
 
-    sqlx::query("UPDATE reflection_proposals SET status = 'applied', resolved_at = NOW() WHERE id = $1")
-        .bind(proposal_id)
-        .execute(db)
-        .await?;
+    sqlx::query(
+        "UPDATE reflection_proposals SET status = 'applied', resolved_at = NOW() WHERE id = $1",
+    )
+    .bind(proposal_id)
+    .execute(db)
+    .await?;
     Ok(outcome)
 }
 

@@ -47,7 +47,11 @@ pub struct RunSummary {
     pub grade: Option<String>,
 }
 
-pub async fn list_runs_for_agent(db: &PgPool, agent_id: Uuid, limit: i64) -> AppResult<Vec<RunSummary>> {
+pub async fn list_runs_for_agent(
+    db: &PgPool,
+    agent_id: Uuid,
+    limit: i64,
+) -> AppResult<Vec<RunSummary>> {
     let rows = sqlx::query_as::<_, RunSummary>(
         r#"SELECT t.id AS task_id, j.title AS job_title, t.status::text AS status,
                   (SELECT COUNT(DISTINCT node_id) FROM node_executions ne WHERE ne.task_id = t.id) AS node_count,

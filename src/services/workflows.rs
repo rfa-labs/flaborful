@@ -182,7 +182,11 @@ pub struct WorkflowCheckpoint {
 }
 
 /// Snapshot the workflow's CURRENT live graph as a new checkpoint. Returns the checkpoint number.
-pub async fn create_checkpoint(db: &PgPool, workflow_id: Uuid, label: Option<String>) -> AppResult<i32> {
+pub async fn create_checkpoint(
+    db: &PgPool,
+    workflow_id: Uuid,
+    label: Option<String>,
+) -> AppResult<i32> {
     let wf = get_workflow(db, workflow_id).await?;
     let number: i32 = sqlx::query_scalar(
         "SELECT COALESCE(MAX(number), 0) + 1 FROM workflow_checkpoints WHERE workflow_id = $1",
@@ -202,7 +206,10 @@ pub async fn create_checkpoint(db: &PgPool, workflow_id: Uuid, label: Option<Str
     Ok(number)
 }
 
-pub async fn list_checkpoints(db: &PgPool, workflow_id: Uuid) -> AppResult<Vec<WorkflowCheckpoint>> {
+pub async fn list_checkpoints(
+    db: &PgPool,
+    workflow_id: Uuid,
+) -> AppResult<Vec<WorkflowCheckpoint>> {
     Ok(sqlx::query_as::<_, WorkflowCheckpoint>(
         "SELECT id, number, label, graph, created_at FROM workflow_checkpoints WHERE workflow_id = $1 ORDER BY number DESC",
     )
