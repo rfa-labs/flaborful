@@ -313,8 +313,9 @@ async fn ingest_repo(
         persona_prompt,
         cf_finetune_id,
         github_token,
-        // Ingestion runs on Managed Agents, which now bills to the professional's own key. Only an
-        // Agent owner has one; a Company vault ingestion has no per-agent key (will skip if unset).
+        // The professional's own Anthropic key, when they've added one. Sprite prefers it and
+        // falls back to the server key, so onboarding still works before a key exists. Only an
+        // Agent owner has one; a Company vault ingestion has no per-agent key (uses the server key).
         anthropic_api_key: match owner {
             VaultOwner::Agent(agent_id) => {
                 crate::services::execution::agent_anthropic_key(db, agent_id).await
@@ -325,9 +326,7 @@ async fn ingest_repo(
         api_base_url,
     };
 
-    // Managed Agents is the default ingestion backend (least setup; the vault tools are
-    // registered as native custom tools). The sink streams the agent's transcript into
-    // ingestion_events for the live onboarding feed.
+    // The sink streams the agent's transcript into ingestion_events for the live onboarding feed.
     let sink = IngestionSink::new(db.clone(), owner, repo.to_string());
     sink.status(
         "running",
@@ -335,14 +334,14 @@ async fn ingest_repo(
     )
     .await;
 
-    // Ingestion backend is selectable so we can compare cost: Managed Agents (default) vs. Sprite.
-    // Set INGEST_BACKEND=sprite to run ingestion on our own Fly.io VM instead (falls back to
-    // Managed automatically if SPRITES_TOKEN isn't configured — see ExecutionBackends::get).
-    let backend_kind = match std::env::var("INGEST_BACKEND").as_deref() {
-        Ok("sprite") => ExecutionBackendKind::Sprite,
-        _ => ExecutionBackendKind::Managed,
-    };
-    let backend = backends.get(backend_kind);
+    // Ingestion runs on Sprite. It happens the moment a professional first builds their vault —
+    // before they've had any chance to add their own Anthropic key — and Managed Agents bills
+    // strictly against the professional's own key with NO server fallback, so on Managed a fresh
+    // onboarding run just skips every repo ("0 notes written"). Sprite falls back to the server's
+    // ANTHROPIC_API_KEY (see sprite.rs), so the vault builds on the platform's dime during
+    // onboarding; it's also cheaper for this documentation workload. (Sprite itself falls back to
+    // Managed only if SPRITES_TOKEN isn't configured — see ExecutionBackends::get.)
+    let backend = backends.get(ExecutionBackendKind::Sprite);
     let result = backend.run_implementation(&brief, &sink).await;
     let _ = crate::services::execution::taste::revoke_by_token(db, &token).await;
 

@@ -81,6 +81,26 @@ struct IngestGitHubRequest {
     /// already in the vault are skipped (resume), so a re-run only fills in the missing ones.
     #[serde(default)]
     force: bool,
+    /// The repos to ingest, exactly as the user picked them in the onboarding repo-picker. Each is
+    /// a `(full_name, default_branch)` pair sourced from `/auth/connections/github/repos` (which
+    /// paginates and carries the authoritative default branch) — so the backend never has to guess
+    /// a branch or rely on the README-capped style-guide profile. When empty/omitted we fall back
+    /// to the repos in the fetched profile, so callers that don't pass a selection still work.
+    #[serde(default)]
+    repos: Vec<RepoSelection>,
+}
+
+#[derive(Deserialize)]
+struct RepoSelection {
+    /// "owner/repo" — the authoritative clone target (owner may be an org/other account).
+    full_name: String,
+    /// The branch to check out. Optional; defaults to "main" if the client omits it.
+    #[serde(default = "default_branch")]
+    branch: String,
+}
+
+fn default_branch() -> String {
+    "main".to_string()
 }
 
 #[derive(Serialize)]
@@ -110,8 +130,22 @@ async fn ingest_github(
         .await
         .map_err(AppError::Internal)?;
 
+    // The repos to work from — the user's picker selection, as authoritative (full_name, branch)
+    // pairs. Both the style guide AND the vault build from exactly these; repo selection happens
+    // before either. With no selection (a caller that doesn't drive the picker), fall back to the
+    // legacy auto-discovery `ingest`, which fetches and caps its own repo list.
+    let selected: Vec<(String, String)> = body
+        .repos
+        .iter()
+        .map(|r| (r.full_name.clone(), r.branch.clone()))
+        .collect();
+
     let ingestion = GitHubIngestion::new(Some(token.clone()));
-    let profile = ingestion.ingest(None).await?;
+    let profile = if selected.is_empty() {
+        ingestion.ingest(None).await?
+    } else {
+        ingestion.ingest_selected(&selected).await?
+    };
     let repos_analyzed = profile.repos.len();
 
     // Style-guide extraction is a *best-effort* persona seed via the inference provider (Ollama
@@ -219,15 +253,19 @@ async fn ingest_github(
     .fetch_optional(&state.db)
     .await?
     .flatten();
-    // Use each repo's authoritative `full_name` ("owner/repo") for the clone target — the owner
-    // can be an org or another account, NOT the authenticated user. Using `<user>/<name>` here was
-    // wrong for org/collaborator repos and produced "Repository not found" in the git proxy.
-    let repos: Vec<(String, String)> = profile
-        .repos
-        .iter()
-        .take(5)
-        .map(|r| (r.full_name.clone(), r.default_branch.clone()))
-        .collect();
+    // Document exactly the repos the user picked — the same selection the style guide used above,
+    // no cap. Each carries its authoritative `full_name` ("owner/repo", the clone target — the
+    // owner can be an org/other account, NOT the authenticated user) and branch, so we never guess
+    // a branch or truncate. With no selection, fall back to every repo in the fetched profile.
+    let repos: Vec<(String, String)> = if selected.is_empty() {
+        profile
+            .repos
+            .iter()
+            .map(|r| (r.full_name.clone(), r.default_branch.clone()))
+            .collect()
+    } else {
+        selected.clone()
+    };
     crate::services::onboarding::ingest::spawn_ingestion(
         state.db.clone(),
         state.backends.clone(),

@@ -32,6 +32,61 @@
   // trains from the vault, so it should be built first.
   let ingestionComplete = false;
 
+  // Repo picker — the user chooses which of their GitHub repos to document into the vault. Loaded
+  // from their connected token once GitHub is connected. `selectedRepos` holds full_name strings.
+  interface RepoOption { full_name: string; private: boolean; default_branch: string; }
+  let repos: RepoOption[] = [];
+  let reposLoading = false;
+  let reposError = '';
+  let selectedRepos = new Set<string>();
+
+  async function loadRepos() {
+    reposLoading = true; reposError = '';
+    try {
+      const list = await api.get<RepoOption[]>('/auth/connections/github/repos');
+      repos = list;
+      // Default to ALL repos selected — the user deselects the ones they don't want documented.
+      selectedRepos = new Set(list.map((r) => r.full_name));
+    } catch (e: unknown) {
+      reposError = e instanceof Error ? e.message : 'Failed to load your GitHub repos';
+    } finally {
+      reposLoading = false;
+    }
+  }
+
+  function toggleRepo(fullName: string) {
+    if (selectedRepos.has(fullName)) selectedRepos.delete(fullName);
+    else selectedRepos.add(fullName);
+    selectedRepos = selectedRepos; // reassign so Svelte reacts to the Set mutation
+  }
+
+  // Select-all / deselect-all shortcut for the picker header. When everything is already selected,
+  // this clears the selection so the user can hand-pick a few; otherwise it selects everything.
+  function toggleAllRepos() {
+    selectedRepos = selectedRepos.size === repos.length
+      ? new Set()
+      : new Set(repos.map((r) => r.full_name));
+  }
+
+  // Optional BYO Anthropic key. Never required — ingestion runs on Sprite with the platform key.
+  // Offered here so a user who wants their own work billed to their own key can add it up front.
+  let anthropicKey = '';
+  let savingKey = false;
+  let keySaved = false;
+  async function saveAnthropicKey() {
+    if (!anthropicKey.trim() || !agentId) return;
+    savingKey = true; error = '';
+    try {
+      await api.patch(`/agents/${agentId}/anthropic-key`, { anthropic_api_key: anthropicKey.trim() });
+      keySaved = true;
+      anthropicKey = '';
+    } catch (e: unknown) {
+      error = e instanceof Error ? e.message : 'Failed to save key';
+    } finally {
+      savingKey = false;
+    }
+  }
+
   onMount(() => {
     const params = $page.url.searchParams;
 
@@ -49,7 +104,9 @@
       if (login) githubLogin = decodeURIComponent(login);
       githubConnected = true;
       step = 2;
-      triggerIngest();
+      // Don't auto-ingest — load the user's repos so they can pick which to document. They kick
+      // off ingestion explicitly with the "Build knowledge vault" button once they've chosen.
+      loadRepos();
       return;
     }
 
@@ -165,6 +222,11 @@
       ingestResult = await api.post<typeof ingestResult>('/onboarding/github/ingest', {
         agent_id: agentId,
         force,
+        // The repos the user picked, each with its authoritative default branch. Empty => backend
+        // falls back to the fetched profile's repos.
+        repos: repos
+          .filter((r) => selectedRepos.has(r.full_name))
+          .map((r) => ({ full_name: r.full_name, branch: r.default_branch })),
       });
       ingestDone = true;
     } catch (e: unknown) {
@@ -392,9 +454,86 @@
           {/if}
 
           {#if githubConnected && !submitting}
-            <button class="btn-primary w-full py-3" on:click={() => triggerIngest(false)}>
-              Build knowledge vault from my repos →
+            <!-- Repo picker — choose which repos to document into your vault. -->
+            <div class="border border-sand-200 rounded-lg overflow-hidden">
+              <div class="flex items-center justify-between px-4 py-2.5 bg-sand-50 border-b border-sand-100">
+                <span class="text-xs font-semibold text-sand-600">
+                  Choose repositories to document
+                  {#if selectedRepos.size > 0}<span class="text-sand-400 font-normal">· {selectedRepos.size} selected</span>{/if}
+                </span>
+                <div class="flex items-center gap-3">
+                  {#if repos.length > 0 && !reposLoading}
+                    <button class="btn-ghost text-xs" on:click={toggleAllRepos}>
+                      {selectedRepos.size === repos.length ? 'Deselect all' : 'Select all'}
+                    </button>
+                  {/if}
+                  <button class="btn-ghost text-xs" on:click={loadRepos} disabled={reposLoading}>
+                    {reposLoading ? 'Loading…' : 'Refresh'}
+                  </button>
+                </div>
+              </div>
+              {#if reposError}
+                <p class="px-4 py-3 text-sm text-sand-400">{reposError}</p>
+              {:else if reposLoading}
+                <p class="px-4 py-3 text-sm text-sand-400 animate-pulse">Loading your GitHub repos…</p>
+              {:else if repos.length === 0}
+                <p class="px-4 py-3 text-sm text-sand-400">No repos found.</p>
+              {:else}
+                <ul class="max-h-72 overflow-y-auto divide-y divide-sand-100">
+                  {#each repos as r (r.full_name)}
+                    <li>
+                      <label class="flex items-center gap-3 px-4 py-2.5 cursor-pointer hover:bg-sand-50">
+                        <input
+                          type="checkbox"
+                          class="shrink-0"
+                          checked={selectedRepos.has(r.full_name)}
+                          on:change={() => toggleRepo(r.full_name)}
+                        />
+                        <span class="text-sm font-mono text-sand-800 truncate flex-1">{r.full_name}</span>
+                        {#if r.private}<span class="badge text-[10px] text-sand-400">private</span>{/if}
+                        <span class="text-[10px] text-sand-400">{r.default_branch}</span>
+                      </label>
+                    </li>
+                  {/each}
+                </ul>
+              {/if}
+            </div>
+
+            <button
+              class="btn-primary w-full py-3"
+              disabled={selectedRepos.size === 0}
+              on:click={() => triggerIngest(false)}
+            >
+              Build knowledge vault from {selectedRepos.size || 'my'} repo{selectedRepos.size === 1 ? '' : 's'} →
             </button>
+
+            <!-- Optional: bring your own Anthropic key. Never required. -->
+            {#if !keySaved}
+              <details class="border border-sand-100 rounded-lg px-4 py-3">
+                <summary class="text-xs font-semibold text-sand-600 cursor-pointer">
+                  Use your own Anthropic API key? <span class="font-normal text-sand-400">(optional)</span>
+                </summary>
+                <p class="text-xs text-sand-500 mt-2 mb-2.5">
+                  Your vault builds on us either way — no key needed to get started. Add your own key
+                  if you'd like your agent's actual work billed to your Anthropic account.
+                </p>
+                <div class="flex items-center gap-2">
+                  <input
+                    type="password"
+                    bind:value={anthropicKey}
+                    placeholder="sk-ant-…"
+                    class="flex-1 border border-sand-200 rounded-md px-3 py-2 text-sm font-mono"
+                  />
+                  <button class="btn-secondary text-xs" disabled={!anthropicKey.trim() || savingKey} on:click={saveAnthropicKey}>
+                    {savingKey ? 'Saving…' : 'Save key'}
+                  </button>
+                </div>
+              </details>
+            {:else}
+              <div class="text-xs text-green-700 bg-green-50 rounded-lg px-4 py-2.5">
+                ✓ Your Anthropic key is saved — your agent's work will bill to your account.
+              </div>
+            {/if}
           {/if}
 
           {#if submitting && githubConnected}

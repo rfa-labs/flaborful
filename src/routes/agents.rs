@@ -26,6 +26,7 @@ pub fn router() -> Router<AppState> {
         .route("/:id/retrain/preview", post(preview_retrain))
         .route("/:id/reset", post(reset_agent))
         .route("/:id/execution", patch(set_execution))
+        .route("/:id/anthropic-key", patch(set_anthropic_key))
         .route("/:id/persona", patch(set_persona))
         .route(
             "/:id/tool-policy",
@@ -167,6 +168,45 @@ async fn set_execution(
     }
 
     Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+#[derive(Deserialize)]
+struct SetAnthropicKeyBody {
+    /// The professional's own Anthropic/Claude API key. Non-empty => encrypt + store (replacing any
+    /// prior key). Empty string => clear the stored key. This is the lightweight path used by the
+    /// onboarding BYO-key prompt, which shouldn't have to send full execution config to save a key.
+    anthropic_api_key: String,
+}
+
+/// PATCH /agents/:id/anthropic-key — set (or clear) just the professional's own Anthropic key,
+/// without touching execution backend/runtime. Onboarding offers this optionally so a user who
+/// wants their own work billed to their key can add it up front; it's never required (ingestion
+/// runs on Sprite with the server key regardless — see services/onboarding/ingest.rs).
+async fn set_anthropic_key(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<Uuid>,
+    Json(body): Json<SetAnthropicKeyBody>,
+) -> AppResult<Json<serde_json::Value>> {
+    authz::require_agent_owner(&state.db, auth.user_id, id).await?;
+    if body.anthropic_api_key.trim().is_empty() {
+        sqlx::query!(
+            "UPDATE agents SET anthropic_api_key_enc = NULL, updated_at = NOW() WHERE id = $1",
+            id,
+        )
+        .execute(&state.db)
+        .await?;
+        return Ok(Json(serde_json::json!({ "ok": true, "key_set": false })));
+    }
+    let enc = crate::services::crypto::encrypt(body.anthropic_api_key.trim())?;
+    sqlx::query!(
+        "UPDATE agents SET anthropic_api_key_enc = $1, updated_at = NOW() WHERE id = $2",
+        enc,
+        id,
+    )
+    .execute(&state.db)
+    .await?;
+    Ok(Json(serde_json::json!({ "ok": true, "key_set": true })))
 }
 
 #[derive(Deserialize)]
