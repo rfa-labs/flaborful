@@ -15,14 +15,16 @@
   interface Ev { repo: string; kind: string; status: string | null; detail: string; notes_count: number }
 
   let repos: Record<string, RepoStatus> = {};
-  let log: { repo: string; detail: string; kind: string }[] = [];
   let complete = false;
   let totalNotes = 0;
   let feed: EventSource | null = null;
-  let logEl: HTMLDivElement;
 
   $: repoList = Object.values(repos);
   $: runningRepo = repoList.find((r) => r.status === 'running')?.repo ?? null;
+  // Total notes for display: the live climbing count comes from summing the per-repo status counts
+  // (each `running`/`done` status row carries the authoritative vault count for that repo), floored
+  // by the snapshot's authoritative total so a reload never shows fewer than were actually written.
+  $: shownNotes = Math.max(totalNotes, repoList.reduce((n, r) => n + (r.notes_count || 0), 0));
 
   const dot = (s: string) =>
     s === 'done' ? 'bg-green-500' : s === 'failed' ? 'bg-red-500' : s === 'running' ? 'bg-amber-400 animate-pulse' : 'bg-sand-300';
@@ -43,10 +45,6 @@
         detail: ev.detail,
       };
       repos = repos;
-    }
-    if (ev.detail) {
-      log = [...log.slice(-200), { repo: ev.repo, detail: ev.detail, kind: ev.kind }];
-      queueMicrotask(() => logEl?.scrollTo({ top: logEl.scrollHeight }));
     }
   }
 
@@ -75,10 +73,8 @@
         if (ev.kind === 'status' && ev.status === 'running' && complete) {
           complete = false;
           repos = {};
-          log = [];
           totalNotes = 0;
         }
-        if (ev.kind === 'note') totalNotes = Math.max(totalNotes, ev.notes_count);
         apply(ev);
       } catch { /* ignore malformed frame */ }
     });
@@ -101,7 +97,7 @@
       {#if complete}Knowledge vault built{:else}Building your knowledge vault…{/if}
     </h3>
     <div class="flex items-center gap-3">
-      <span class="text-xs text-sand-500">{totalNotes} note{totalNotes === 1 ? '' : 's'} written</span>
+      <span class="text-xs text-sand-500">{shownNotes} note{shownNotes === 1 ? '' : 's'} written</span>
       {#if !complete}
         <button class="text-xs text-red-600 hover:underline disabled:text-sand-400" disabled={stopping} on:click={stop}>
           {stopping ? 'Stopping…' : 'Stop ingestion'}
@@ -133,20 +129,9 @@
     {/each}
   </ul>
 
-  <!-- Live transcript -->
-  <div bind:this={logEl} class="bg-sand-900 text-sand-100 rounded p-2 text-[11px] font-mono h-40 overflow-y-auto leading-relaxed">
-    {#each log as line}
-      <div class={line.kind === 'note' ? 'text-green-300' : 'text-sand-300'}>
-        <span class="text-sand-500">{line.repo ? `[${line.repo}] ` : ''}</span>{line.detail}
-      </div>
-    {:else}
-      <div class="text-sand-500">…</div>
-    {/each}
-  </div>
-
   {#if complete}
     <div class="text-sm text-green-700 font-medium">
-      ✓ Vault ready — {totalNotes} notes across {repoList.length} repos. Safe to continue to the interview and training.
+      ✓ Vault ready — {shownNotes} notes across {repoList.length} repos. Safe to continue to the interview and training.
     </div>
   {/if}
 </div>

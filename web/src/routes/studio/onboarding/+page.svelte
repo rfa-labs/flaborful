@@ -31,6 +31,11 @@
   // its completion (via the live IngestionProgress feed) so we can gate "Start interview" — LoRA
   // trains from the vault, so it should be built first.
   let ingestionComplete = false;
+  // Bumped on every ingest kickoff (initial + each "Build missing" / "Re-do from scratch"). Used as
+  // a Svelte {#key} to fully REMOUNT the IngestionProgress panel per run, so a re-run immediately
+  // re-seeds its snapshot and reopens the SSE feed instead of showing the previous run's stale
+  // "complete" state (which raced the fresh `running` event and left the panel frozen).
+  let runNonce = 0;
 
   // Repo picker — the user chooses which of their GitHub repos to document into the vault. Loaded
   // from their connected token once GitHub is connected. `selectedRepos` holds full_name strings.
@@ -229,6 +234,10 @@
           .map((r) => ({ full_name: r.full_name, branch: r.default_branch })),
       });
       ingestDone = true;
+      // A new run started server-side (prior events were cleared): reset completion gating and
+      // remount the progress panel so it reflects THIS run from the first event, not the last one.
+      ingestionComplete = false;
+      runNonce += 1;
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'GitHub ingestion failed';
     } finally {
@@ -565,9 +574,12 @@
           </div>
         {/if}
 
-        <!-- Live progress of the agentic repo→vault documentation (the deep knowledge base). -->
+        <!-- Live progress of the agentic repo→vault documentation (the deep knowledge base).
+             Keyed on runNonce so each re-run remounts it (fresh snapshot + SSE feed). -->
         <div class="border-t border-sand-100 pt-5 mt-5">
-          <IngestionProgress {agentId} on:complete={() => (ingestionComplete = true)} />
+          {#key runNonce}
+            <IngestionProgress {agentId} on:complete={() => (ingestionComplete = true)} />
+          {/key}
           <div class="flex items-center gap-3 mt-3">
             <button class="btn-ghost text-sm" disabled={submitting} on:click={() => triggerIngest(false)}>
               ↻ Build missing repos

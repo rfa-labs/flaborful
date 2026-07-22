@@ -104,8 +104,11 @@ impl IngestionSink {
     }
 
     /// Emit a per-repo lifecycle status row (running | done | failed) carrying the running
-    /// event tally as `notes_count`.
+    /// event tally as `notes_count`. Also mirrored to the server logs — the transcript otherwise
+    /// only lands in `ingestion_events` (for the SSE feed), so without this a run in flight is
+    /// invisible in `tracing` output whenever the UI feed is unavailable.
     async fn status(&self, status: &str, detail: &str) {
+        tracing::info!(owner = %self.owner_id, repo = %self.repo, status, "ingestion: {detail}");
         self.record("status", Some(status), detail, self.notes_count())
             .await;
     }
@@ -113,6 +116,7 @@ impl IngestionSink {
     /// Emit a status row with an explicit, authoritative note count. Used for `done`, where the
     /// number must reflect distinct vault rows (the event tally double-counts on retries/reruns).
     async fn status_with_count(&self, status: &str, detail: &str, count: i32) {
+        tracing::info!(owner = %self.owner_id, repo = %self.repo, status, notes = count, "ingestion: {detail}");
         self.record("status", Some(status), detail, count).await;
     }
 
@@ -135,22 +139,31 @@ impl IngestionSink {
 #[async_trait::async_trait]
 impl TranscriptSink for IngestionSink {
     async fn push(&self, chunk: &str) {
-        // Detect a note being written, across BOTH backends:
-        //  - Managed prefixes vault-tool results with the tool name: "[upsert_note] → ...".
-        //  - Sprite streams Claude Code's `stream-json` events, where an upsert shows up as a
-        //    tool-use line naming `upsert_note` (e.g. `mcp__vault__upsert_note`).
-        // Either way, tag the event as a note so the UI can distinguish it from generic transcript
-        // and tick the live counter. (The authoritative final tally still comes from
-        // vault_note_count() against the DB, so a missed/extra live tick can't corrupt the result.)
+        // The agent's raw transcript is a firehose: the Sprite backend calls push() once per
+        // WebSocket frame of stdout/stderr (hundreds–thousands per repo under stream-json). We do
+        // NOT persist it — a DB row per chunk is the scalability problem this table had. The
+        // transcript is instead surfaced live via the server logs, and progress reaches the UI as
+        // low-volume `running` status rows driven by the AUTHORITATIVE vault count (see the progress
+        // ticker in `ingest_repo`), not by parsing this stream.
+        //
+        // We still scan chunks for two things, both cheap and DB-free:
+        //  1. A note being written — bump the in-memory counter only (no row). Kept as a fast-path
+        //     hint; the persisted counts come from vault_note_count(), so a miss here can't corrupt
+        //     the result.
+        //  2. Terminal agent failures that arrive as ordinary transcript (the run still returns Ok)
+        //     — surface them to the server logs, since they'd otherwise be invisible. Most important:
+        //     "Credit balance is too low" (billing_error) and the checkout-failed abort.
         let is_note =
             chunk.starts_with("[upsert_note]") || chunk.contains("mcp__vault__upsert_note");
-        let notes = if is_note {
-            self.notes.fetch_add(1, Ordering::Relaxed) + 1
-        } else {
-            self.notes_count()
-        };
-        let kind = if is_note { "note" } else { "message" };
-        self.record(kind, None, chunk, notes).await;
+        if is_note {
+            self.notes.fetch_add(1, Ordering::Relaxed);
+        }
+        if chunk.contains("billing_error")
+            || chunk.contains("Credit balance is too low")
+            || chunk.contains("INGEST_ABORT")
+        {
+            tracing::warn!(owner = %self.owner_id, repo = %self.repo, "ingestion agent error: {chunk}");
+        }
     }
 }
 
@@ -261,6 +274,31 @@ pub fn spawn_ingestion(
         )
         .execute(&db)
         .await;
+
+        // Prune to the final state. During the run we emit periodic `running` progress rows (one per
+        // vault-count increase per repo); once complete, only the FINAL state per repo matters for a
+        // reload. Delete everything for this owner except the newest `status` row per non-empty repo
+        // (the terminal done/failed/skipped) and the `complete` sentinel. This collapses each
+        // owner's footprint to a few rows — the whole point of not persisting the firehose.
+        if let Err(e) = sqlx::query!(
+            r#"DELETE FROM ingestion_events e
+               WHERE e.owner_kind = $1 AND e.agent_id = $2
+                 AND e.repo <> ''
+                 AND e.id <> (
+                     SELECT id FROM ingestion_events k
+                     WHERE k.owner_kind = e.owner_kind AND k.agent_id = e.agent_id
+                       AND k.repo = e.repo AND k.kind = 'status'
+                     ORDER BY k.created_at DESC
+                     LIMIT 1
+                 )"#,
+            owner_kind,
+            owner_id,
+        )
+        .execute(&db)
+        .await
+        {
+            tracing::warn!("ingestion_events prune failed for {owner_id}: {e:?}");
+        }
     });
 }
 
@@ -331,13 +369,41 @@ async fn ingest_repo(
         api_base_url,
     };
 
-    // The sink streams the agent's transcript into ingestion_events for the live onboarding feed.
-    let sink = IngestionSink::new(db.clone(), owner, repo.to_string());
+    // The sink is the transcript target for the backend. It no longer persists the transcript (see
+    // IngestionSink::push); progress reaches the UI as low-volume `running` status rows emitted by
+    // the ticker below. Arc so the ticker task can share it with the run.
+    let sink = std::sync::Arc::new(IngestionSink::new(db.clone(), owner, repo.to_string()));
     sink.status(
         "running",
         &format!("Documenting {repo} (branch {base_branch})"),
     )
     .await;
+
+    // Progress ticker: while the agent runs, poll the AUTHORITATIVE vault note count for this repo
+    // and emit a `running` status row only when it increases. This gives the live feed and reloads
+    // an accurate, climbing note count without a DB row per transcript chunk — tens of rows per
+    // repo at most, driven by real vault_notes inserts rather than the double-counting transcript
+    // heuristic. Cancelled as soon as the run returns.
+    let ticker = {
+        let sink = sink.clone();
+        let repo = repo.to_string();
+        tokio::spawn(async move {
+            let mut last = -1;
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(7)).await;
+                let count = sink.vault_note_count().await;
+                if count > last {
+                    last = count;
+                    sink.status_with_count(
+                        "running",
+                        &format!("Documenting {repo} — {count} notes so far"),
+                        count,
+                    )
+                    .await;
+                }
+            }
+        })
+    };
 
     // Ingestion runs on Sprite. It happens the moment a professional first builds their vault —
     // before they've had any chance to add their own Anthropic key — and Managed Agents bills
@@ -347,7 +413,8 @@ async fn ingest_repo(
     // onboarding; it's also cheaper for this documentation workload. (Sprite itself falls back to
     // Managed only if SPRITES_TOKEN isn't configured — see ExecutionBackends::get.)
     let backend = backends.get(ExecutionBackendKind::Sprite);
-    let result = backend.run_implementation(&brief, &sink).await;
+    let result = backend.run_implementation(&brief, sink.as_ref()).await;
+    ticker.abort(); // stop polling now that the run is done
     let _ = crate::services::execution::taste::revoke_by_token(db, &token).await;
 
     match &result {

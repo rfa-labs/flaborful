@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM ingestion_events e\n               WHERE e.owner_kind = $1 AND e.agent_id = $2\n                 AND e.repo <> ''\n                 AND e.id <> (\n                     SELECT id FROM ingestion_events k\n                     WHERE k.owner_kind = e.owner_kind AND k.agent_id = e.agent_id\n                       AND k.repo = e.repo AND k.kind = 'status'\n                     ORDER BY k.created_at DESC\n                     LIMIT 1\n                 )",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e745578798cc30413fd866535bf6f044f0c39049040897f3674da1ab07c78258"
+}
