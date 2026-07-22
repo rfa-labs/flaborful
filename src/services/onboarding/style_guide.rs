@@ -49,7 +49,9 @@ Be specific and concrete. Avoid generic observations."#;
         );
 
         let raw = self.inference.orchestrate(system, &user, true).await?;
-        let guide: Value = serde_json::from_str(crate::services::inference::strip_fences(&raw))
+        // The orchestrator sometimes appends a prose note after the JSON object; slice out just
+        // the object so that trailing commentary doesn't fail the parse.
+        let guide: Value = serde_json::from_str(crate::services::inference::extract_json(&raw))
             .map_err(|e| anyhow::anyhow!("JSON parse failed: {e} | raw={raw}"))?;
         Ok(guide)
     }

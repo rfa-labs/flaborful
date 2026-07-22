@@ -15,6 +15,11 @@
   interface Ev { repo: string; kind: string; status: string | null; detail: string; notes_count: number }
 
   let repos: Record<string, RepoStatus> = {};
+  // Live scrolling feed of the events as they stream in. We only render what's streamed (the
+  // low-volume note-increase / start / done status lines) — nothing extra is persisted for this;
+  // a reload simply starts the feed fresh while the per-repo counts restore from the snapshot.
+  let log: { repo: string; detail: string; kind: string }[] = [];
+  let logEl: HTMLDivElement;
   let complete = false;
   let totalNotes = 0;
   let feed: EventSource | null = null;
@@ -46,6 +51,11 @@
       };
       repos = repos;
     }
+    // Append each event's detail line to the live scrolling feed, and autoscroll to the bottom.
+    if (ev.detail) {
+      log = [...log.slice(-200), { repo: ev.repo, detail: ev.detail, kind: ev.kind }];
+      queueMicrotask(() => logEl?.scrollTo({ top: logEl.scrollHeight }));
+    }
   }
 
   onMount(async () => {
@@ -73,6 +83,7 @@
         if (ev.kind === 'status' && ev.status === 'running' && complete) {
           complete = false;
           repos = {};
+          log = [];
           totalNotes = 0;
         }
         apply(ev);
@@ -128,6 +139,17 @@
       <li class="text-xs text-sand-400">Waiting for the first repo to start…</li>
     {/each}
   </ul>
+
+  <!-- Live feed -->
+  <div bind:this={logEl} class="bg-sand-900 text-sand-100 rounded p-2 text-[11px] font-mono h-40 overflow-y-auto leading-relaxed">
+    {#each log as line}
+      <div class={line.kind === 'note' ? 'text-green-300' : 'text-sand-300'}>
+        <span class="text-sand-500">{line.repo ? `[${line.repo}] ` : ''}</span>{line.detail}
+      </div>
+    {:else}
+      <div class="text-sand-500">…</div>
+    {/each}
+  </div>
 
   {#if complete}
     <div class="text-sm text-green-700 font-medium">

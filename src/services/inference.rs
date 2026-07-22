@@ -24,6 +24,84 @@ pub fn strip_fences(s: &str) -> &str {
         .trim()
 }
 
+/// Extract the first balanced JSON object/array from a model response.
+///
+/// Orchestrator models don't always honor JSON mode strictly: they may wrap the object in code
+/// fences, or (the case that broke style-guide extraction) append a trailing prose paragraph after
+/// the closing brace. `strip_fences` handles fences; this additionally slices out just the JSON
+/// value so trailing/leading prose can't fail the parse. Falls back to the fence-stripped string
+/// when no object/array is found (so pure-JSON responses are unaffected). Brace/bracket counting
+/// is string-literal aware so braces inside JSON string values don't throw off the balance.
+pub fn extract_json(s: &str) -> &str {
+    let stripped = strip_fences(s);
+    let bytes = stripped.as_bytes();
+    let Some(start) = bytes.iter().position(|&b| b == b'{' || b == b'[') else {
+        return stripped;
+    };
+    let open = bytes[start];
+    let close = if open == b'{' { b'}' } else { b']' };
+    let mut depth = 0i32;
+    let mut in_str = false;
+    let mut escaped = false;
+    for (i, &b) in bytes.iter().enumerate().skip(start) {
+        if in_str {
+            if escaped {
+                escaped = false;
+            } else if b == b'\\' {
+                escaped = true;
+            } else if b == b'"' {
+                in_str = false;
+            }
+            continue;
+        }
+        match b {
+            b'"' => in_str = true,
+            x if x == open => depth += 1,
+            x if x == close => {
+                depth -= 1;
+                if depth == 0 {
+                    return &stripped[start..=i];
+                }
+            }
+            _ => {}
+        }
+    }
+    stripped // unbalanced — let the caller's parse surface the real error
+}
+
+#[cfg(test)]
+mod extract_json_tests {
+    use super::extract_json;
+
+    #[test]
+    fn strips_trailing_prose_after_object() {
+        let raw = "{\"a\":1}\n\n**Note on confidence**: derived from one repo.";
+        assert_eq!(extract_json(raw), "{\"a\":1}");
+    }
+
+    #[test]
+    fn handles_fenced_and_leading_prose() {
+        let raw = "Here you go:\n```json\n{\"a\": {\"b\": 2}}\n```\ndone";
+        assert_eq!(extract_json(raw), "{\"a\": {\"b\": 2}}");
+    }
+
+    #[test]
+    fn ignores_braces_inside_strings() {
+        let raw = "{\"note\": \"has a } brace\"} trailing";
+        assert_eq!(extract_json(raw), "{\"note\": \"has a } brace\"}");
+    }
+
+    #[test]
+    fn arrays_supported() {
+        assert_eq!(extract_json("[1, 2, 3] and more"), "[1, 2, 3]");
+    }
+
+    #[test]
+    fn pure_json_unchanged() {
+        assert_eq!(extract_json("{\"a\":1}"), "{\"a\":1}");
+    }
+}
+
 /// Ollama Cloud — OpenAI-compatible API for orchestrator + embeddings.
 /// Cloudflare Workers AI — for personalized worker inference with LoRA adapters.
 
