@@ -1,0 +1,76 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT t.id, t.job_id, t.workflow_id, t.input, t.target,\n                      a.id as agent_id, a.persona_system_prompt, a.cf_finetune_id,\n                      w.graph as \"graph?\", w.execution_environment as \"execution_environment?\"\n               FROM tasks t\n               JOIN jobs j ON j.id = t.job_id\n               JOIN agents a ON a.id = j.agent_id\n               LEFT JOIN workflows w ON w.id = t.workflow_id\n               WHERE t.id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "job_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "workflow_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "input",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 4,
+        "name": "target",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 5,
+        "name": "agent_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 6,
+        "name": "persona_system_prompt",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "cf_finetune_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 8,
+        "name": "graph?",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 9,
+        "name": "execution_environment?",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      true
+    ]
+  },
+  "hash": "e02bd783d29774d4b114070878c266a8e66f4ddc1a88a01309d6f268fee2067d"
+}

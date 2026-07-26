@@ -47,6 +47,14 @@ impl AgentRuntime for ClaudeCodeRuntime {
         // the project .mcp.json server without it. Single-quote-escape dynamic strings.
         let persona = shell_escape(&brief.persona_prompt);
         let prompt = shell_escape(&build_prompt(brief));
+        // The coding model: the brief's pin, else the per-`TaskKind` default (frontier for
+        // Implement, cheaper for Ingest documentation). No longer hardcoded to opus-4-8, so a
+        // high-volume ingestion run doesn't pay frontier prices on the platform's key.
+        let model = brief
+            .model
+            .clone()
+            .unwrap_or_else(|| super::super::default_model(brief.kind));
+        let model = shell_escape(&model);
         // `--output-format stream-json --verbose` makes Claude Code emit one JSON event per line as
         // it works, instead of buffering all output until the run finishes and printing it at the
         // end. Without this, the platform's `exec_streaming` sees NO output for the entire run — the
@@ -57,13 +65,14 @@ impl AgentRuntime for ClaudeCodeRuntime {
         // end-of-run summary still rides through in the JSON `result` text, so `parse_summary`'s
         // substring scan over the raw stream keeps working.
         format!(
-            "cd {repo} && ANTHROPIC_MODEL=claude-opus-4-8 claude -p {prompt} \
+            "cd {repo} && ANTHROPIC_MODEL={model} claude -p {prompt} \
              --append-system-prompt {persona} \
              --output-format stream-json --verbose \
              --permission-mode acceptEdits --dangerously-skip-permissions \
              --allowedTools 'Bash,Edit,Write,Read,Glob,Grep,mcp__principal__consult_principal,mcp__vault__upsert_note,mcp__vault__list_vault,mcp__vault__read_note,mcp__vault__search_vault,mcp__vault__follow_links,mcp__vault__record_experience,mcp__vault__record_technical' \
              2>&1",
             repo = repo_dir,
+            model = model,
             prompt = prompt,
             persona = persona,
         )

@@ -13,6 +13,10 @@ pub struct Workflow {
     pub graph: JsonValue,     // node-graph JSON (nodes + edges)
     pub is_universal: bool,   // true = template library; false = job-specific
     pub job_id: Option<Uuid>, // set when is_universal = false
+    /// Workflow-level execution environment for its SWE nodes: 'managed_cloud' | 'claude_code_byok'
+    /// | 'optimizer_fbx'. Null => the platform default (optimizer_fbx). Applied to EVERY sprite node
+    /// in a run so the coding agent (and fbx-agent's session) is consistent across the whole DAG.
+    pub execution_environment: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -84,6 +88,7 @@ impl WorkflowNode {
             NodeType::JoinPaths => "join_paths",
             NodeType::ErrorShield => "error_shield",
             NodeType::AskAi => "ask_ai",
+            NodeType::BuildBlueprint => "build_blueprint",
             NodeType::ExtractData => "extract_data",
             NodeType::Categorizer => "categorizer",
             NodeType::Scorer => "scorer",
@@ -147,6 +152,9 @@ pub enum NodeType {
     JoinPaths,
     ErrorShield,
     AskAi,
+    // Distills the professional's knowledge vault (+ company repo overlay) into a task-scoped
+    // brief in their voice — the Execution Blueprint, surfaced as a composable node.
+    BuildBlueprint,
     ExtractData,
     Categorizer,
     Scorer,
@@ -200,4 +208,18 @@ pub struct UpdateWorkflowRequest {
     pub description: Option<String>,
     pub graph: Option<JsonValue>,
     pub is_universal: Option<bool>,
+    /// Workflow-level execution environment ('managed_cloud' | 'claude_code_byok' | 'optimizer_fbx').
+    /// `Some(None)` explicitly clears it (back to the platform default); absent leaves it unchanged.
+    #[serde(default, deserialize_with = "crate::models::workflow::double_option")]
+    pub execution_environment: Option<Option<String>>,
+}
+
+/// Distinguish "field absent" (leave unchanged) from "field present but null" (clear to default),
+/// so the workflow update can both set and unset the environment.
+pub fn double_option<'de, D, T>(de: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Ok(Some(Option::deserialize(de)?))
 }

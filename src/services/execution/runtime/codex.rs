@@ -41,9 +41,17 @@ impl AgentRuntime for CodexRuntime {
             persona = brief.persona_prompt,
             task = brief.task_text,
         ));
+        // Pin the model when the brief specifies one (else Codex uses its own default), so a
+        // cheaper model can be selected per task the way the other runtimes do.
+        let model = brief
+            .model
+            .clone()
+            .unwrap_or_else(|| super::super::default_model(brief.kind));
+        let model_flag = format!("--model {} ", shell_escape(&model));
         format!(
-            "cd {repo} && codex exec --full-auto {prompt} 2>&1",
+            "cd {repo} && codex exec --full-auto {model_flag}{prompt} 2>&1",
             repo = repo_dir,
+            model_flag = model_flag,
             prompt = prompt,
         )
     }

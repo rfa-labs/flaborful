@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT optimizer_api_key_enc FROM agents WHERE id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "optimizer_api_key_enc",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "57c64034e51adbe09bd5f0ba14b0e51505dbf0daf64dc2741ddf0a3e1f6ddea7"
+}

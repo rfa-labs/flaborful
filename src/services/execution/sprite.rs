@@ -12,13 +12,17 @@ use anyhow::{anyhow, Result};
 use sqlx::PgPool;
 
 use super::runtime::{
-    claude_code::ClaudeCodeRuntime, codex::CodexRuntime, custom::CustomRuntime, AgentRuntime,
+    claude_code::ClaudeCodeRuntime, codex::CodexRuntime, custom::CustomRuntime,
+    fbx_agent::FbxAgentRuntime, AgentRuntime,
 };
 use super::sprite_client::{ExecOutput, SpriteClient, SpriteHandle};
 use super::sprite_env::{self, SpriteProvisioning};
 use super::{AgentRuntimeKind, ExecResult, ExecutionBackend, TaskBrief, TranscriptSink};
 
 const REPO_DIR: &str = "/workspace/repo";
+/// The repo checkout path, exposed for runtime adapters that need to reference it (e.g. fbx-agent
+/// writes it into its step config so its file/command tools operate on the checkout).
+pub(crate) const REPO_DIR_PUB: &str = REPO_DIR;
 
 pub struct SpriteBackend {
     db: PgPool,
@@ -49,6 +53,7 @@ impl SpriteBackend {
             AgentRuntimeKind::Custom => Box::new(CustomRuntime::new(
                 runtime_spec.unwrap_or(serde_json::Value::Null),
             )),
+            AgentRuntimeKind::FbxAgent => Box::new(FbxAgentRuntime),
         }
     }
 
@@ -294,15 +299,14 @@ impl ExecutionBackend for SpriteBackend {
         )
         .fetch_optional(&self.db)
         .await?;
-        let runtime_kind = agent_row
-            .as_ref()
-            .and_then(|r| match r.agent_runtime.as_str() {
-                "claude_code" => Some(AgentRuntimeKind::ClaudeCode),
-                "codex" => Some(AgentRuntimeKind::Codex),
-                "custom" => Some(AgentRuntimeKind::Custom),
-                _ => None,
-            })
-            .unwrap_or_default();
+        // A per-node execution-environment choice (on the brief) wins over the agent default, so a
+        // single workflow can mix environments node-to-node.
+        let runtime_kind = brief.runtime_override.unwrap_or_else(|| {
+            agent_row
+                .as_ref()
+                .and_then(|r| AgentRuntimeKind::from_str_opt(&r.agent_runtime))
+                .unwrap_or_default()
+        });
         let runtime_spec = agent_row.and_then(|r| r.runtime_spec);
         let runtime = Self::runtime_for(runtime_kind, runtime_spec);
 
@@ -344,15 +348,20 @@ impl SpriteBackend {
                 .await;
         }
         let mcp = runtime.mcp_config(&brief.taste_url(), &brief.vault_url());
-        let write_cfg = format!(
-            "mkdir -p $(dirname {p}) && cat > {p} <<'FLABEOF'\n{c}\nFLABEOF",
-            p = mcp.path,
-            c = mcp.contents
-        );
-        let _ = self
-            .client
-            .exec(&handle.name, &write_cfg, Some("/"), &[], 60)
-            .await;
+        let prelaunch = runtime.prelaunch_files(brief);
+        // The MCP config plus any runtime prelaunch files (e.g. fbx-agent's step config). All are
+        // written the same way: mkdir the parent, then a quoted heredoc so contents survive intact.
+        for f in std::iter::once(&mcp).chain(prelaunch.iter()) {
+            let write_cfg = format!(
+                "mkdir -p $(dirname {p}) && cat > {p} <<'FLABEOF'\n{c}\nFLABEOF",
+                p = f.path,
+                c = f.contents
+            );
+            let _ = self
+                .client
+                .exec(&handle.name, &write_cfg, Some("/"), &[], 60)
+                .await;
+        }
 
         // The MCP config is platform infrastructure (contains our taste endpoint + per-task token).
         // It lives inside the repo so the agent runtime can read it, but it must NOT end up in the

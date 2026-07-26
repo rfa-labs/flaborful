@@ -192,7 +192,11 @@ pub async fn consult(
          judgment and style. Be concrete and decisive.",
         persona
     );
+    // Likeness step (the whole point of consult_principal): answer via the professional's LoRA,
+    // never optimizer-routed.
+    // escalation intentionally omitted — likeness is LoRA-only by design; if a frontier fallback for
+    // a hard/ambiguous consult is ever wanted, it belongs here (the call site), not in worker_likeness.
     inference
-        .worker(&system, question, row.cf_finetune_id.as_deref())
+        .worker_likeness(&system, question, row.cf_finetune_id.as_deref())
         .await
 }

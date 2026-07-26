@@ -122,7 +122,8 @@ pub async fn build_blueprint(
         task = task_text, style = style, arch = arch, snippets = snippets, company = company_block,
     );
 
-    let distilled = inference.worker(&system, &user, lora_name).await?;
+    // Likeness step: distill in the professional's voice via their LoRA — never optimizer-routed.
+    let distilled = inference.worker_likeness(&system, &user, lora_name).await?;
 
     // Applicable skills, appended verbatim after the distilled brief.
     let skills_block = if skills.is_empty() {

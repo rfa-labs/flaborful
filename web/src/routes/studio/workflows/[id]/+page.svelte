@@ -46,7 +46,8 @@
     target: string;
   }
 
-  let workflow: { id: string; agent_id: string; name: string; description: string; graph: { nodes: WFNode[]; edges: WFEdge[] }; is_universal: boolean } | null = null;
+  let workflow: { id: string; agent_id: string; name: string; description: string; graph: { nodes: WFNode[]; edges: WFEdge[] }; is_universal: boolean; execution_environment: string | null } | null = null;
+  let showSettings = false;
   // Other workflows belonging to this agent — the pick-list for a Subflow node's target.
   let siblingWorkflows: { id: string; name: string }[] = [];
   let nodes: WFNode[] = [];
@@ -294,6 +295,12 @@
     selectedNode = copy;
   }
 
+  function onEnvChange(e: Event) {
+    if (!workflow) return;
+    const v = (e.currentTarget as HTMLSelectElement).value;
+    workflow.execution_environment = v === '' ? null : v;
+  }
+
   async function save() {
     if (!workflow) return;
     saving = true;
@@ -398,6 +405,7 @@
 
     <div class="flex-1"></div>
 
+    <button class="btn-ghost text-sm" on:click={() => showSettings = !showSettings}>Settings</button>
     <button class="btn-ghost text-sm" on:click={toggleHistory}>History</button>
     <button class="btn-ghost text-sm" on:click={() => showAddPanel = !showAddPanel}>
       + Add node
@@ -424,6 +432,34 @@
   {/if}
 
   <div class="flex-1 flex overflow-hidden relative">
+    <!-- Workflow settings -->
+    {#if showSettings && workflow}
+      <div class="absolute right-4 top-4 z-30 bg-white rounded-xl border border-sand-200 shadow-lg w-80 max-h-[85vh] flex flex-col">
+        <div class="px-4 py-3 border-b border-sand-100 flex items-center justify-between">
+          <span class="font-semibold text-sm">Workflow settings</span>
+          <button class="text-sand-400 hover:text-sand-600 text-lg leading-none" on:click={() => showSettings = false}>×</button>
+        </div>
+        <div class="p-4 space-y-2">
+          <label class="label text-xs" for="exec-env">Execution environment</label>
+          <select
+            class="input text-sm w-full"
+            id="exec-env"
+            value={workflow.execution_environment ?? ''}
+            on:change={onEnvChange}
+          >
+            <option value="">Optimizer fbx-agent (default · cheapest)</option>
+            <option value="optimizer_fbx">Optimizer fbx-agent (cheapest)</option>
+            <option value="claude_code_byok">Claude Code (your Anthropic key)</option>
+            <option value="managed_cloud">Managed Claude cloud (premium)</option>
+          </select>
+          <p class="text-xs text-sand-400">
+            How this workflow's software-engineering steps run. Applies to every sprite node in the
+            workflow so the coding agent stays consistent across the run. Save to apply.
+          </p>
+        </div>
+      </div>
+    {/if}
+
     <!-- Checkpoint history -->
     {#if showHistory}
       <div class="absolute right-4 top-4 z-30 bg-white rounded-xl border border-sand-200 shadow-lg w-72 max-h-[85vh] flex flex-col">

@@ -91,9 +91,24 @@ pub async fn update_workflow(
     if let Some(graph) = &req.graph {
         validate_graph(graph)?;
     }
+    // Resolve the environment: absent => unchanged; present => set/clear (validated).
+    let execution_environment = match req.execution_environment {
+        None => current.execution_environment,
+        Some(env) => {
+            if let Some(v) = &env {
+                if crate::services::execution::ExecutionEnvironment::from_str_opt(v).is_none() {
+                    return Err(AppError::BadRequest(format!(
+                        "execution_environment must be managed_cloud, claude_code_byok, or optimizer_fbx (got {v:?})"
+                    )));
+                }
+            }
+            env
+        }
+    };
     let row = sqlx::query_as::<_, Workflow>(
         r#"UPDATE workflows
-           SET name = $2, description = $3, graph = $4, is_universal = $5, updated_at = $6
+           SET name = $2, description = $3, graph = $4, is_universal = $5,
+               execution_environment = $6, updated_at = $7
            WHERE id = $1
            RETURNING *"#,
     )
@@ -102,6 +117,7 @@ pub async fn update_workflow(
     .bind(req.description.or(current.description))
     .bind(req.graph.unwrap_or(current.graph))
     .bind(req.is_universal.unwrap_or(current.is_universal))
+    .bind(execution_environment)
     .bind(Utc::now())
     .fetch_one(db)
     .await?;
@@ -153,8 +169,8 @@ pub async fn list_library(db: &PgPool, agent_id: Uuid) -> AppResult<Vec<Workflow
 /// Clone a workflow into a fresh editable copy (a new universal workflow) for the same agent.
 pub async fn clone_workflow(db: &PgPool, src: &Workflow) -> AppResult<Workflow> {
     let row = sqlx::query_as::<_, Workflow>(
-        r#"INSERT INTO workflows (id, agent_id, aspect_id, name, description, graph, is_universal, job_id, created_at, updated_at)
-           VALUES ($1, $2, $3, $4, $5, $6, true, NULL, $7, $7)
+        r#"INSERT INTO workflows (id, agent_id, aspect_id, name, description, graph, is_universal, job_id, execution_environment, created_at, updated_at)
+           VALUES ($1, $2, $3, $4, $5, $6, true, NULL, $7, $8, $8)
            RETURNING *"#,
     )
     .bind(Uuid::new_v4())
@@ -163,6 +179,7 @@ pub async fn clone_workflow(db: &PgPool, src: &Workflow) -> AppResult<Workflow> 
     .bind(format!("{} (copy)", src.name))
     .bind(&src.description)
     .bind(&src.graph)
+    .bind(&src.execution_environment)
     .bind(Utc::now())
     .fetch_one(db)
     .await?;

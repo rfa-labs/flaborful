@@ -338,6 +338,17 @@ async fn ingest_repo(
 
     let api_base_url =
         std::env::var("API_BASE_URL").unwrap_or_else(|_| "http://localhost:8080".into());
+    // Optimizer creds so the fbx-agent runtime routes ingestion's LLM calls through the edge.
+    // Agent owner → its creds (agent key or server key); company vault → server creds (no agent).
+    // When OPTIMIZER_* is unset these resolve to None and the run behaves as before (Claude Code /
+    // Ollama fallback). Only the fbx-agent runtime consumes them.
+    let optimizer_creds = match owner {
+        VaultOwner::Agent(agent_id) => {
+            crate::services::execution::agent_optimizer_creds(db, agent_id).await
+        }
+        VaultOwner::Company(_) => crate::services::execution::server_optimizer_creds(),
+    };
+
     // The ingestion run is read-only documentation; we never commit/push, so task_id is a fresh
     // uuid only used to name the agent/branch (no tasks row exists).
     let brief = TaskBrief {
@@ -367,6 +378,17 @@ async fn ingest_repo(
         },
         taste_token: token.clone(),
         api_base_url,
+        // Documentation is high-volume and (for a fresh agent / company vault) runs on the
+        // platform's server key. Leave the model unpinned so the runtime uses the cheap
+        // `Ingest` default (env `FLABORFUL_MODEL_INGEST`) instead of a frontier model.
+        model: None,
+        // Optimizer creds for the fbx-agent runtime (None when OPTIMIZER_* is unset → legacy behavior).
+        optimizer_base_url: optimizer_creds.base_url.clone(),
+        optimizer_key: optimizer_creds.key.clone(),
+        provider_key: optimizer_creds.provider_key.clone(),
+        vars: serde_json::Value::Null,
+        // No per-node override for the ingest lane — the agent's configured runtime drives it.
+        runtime_override: None,
     };
 
     // The sink is the transcript target for the backend. It no longer persists the transcript (see

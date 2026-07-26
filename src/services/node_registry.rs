@@ -554,6 +554,30 @@ pub fn manifests() -> Vec<NodeManifest> {
         outputs: vec![PortSpec::new("ai_response", "Response", PortType::Text)],
     });
     m.push(NodeManifest {
+        node_type: "build_blueprint",
+        category: Category::UsingAi,
+        label: "Build Blueprint",
+        icon: "🧭",
+        color: "#6a34ff",
+        help: "Distills the professional's knowledge vault (and the company repo context) into a \
+               task-scoped brief in their voice, for a downstream coding agent to follow. Wire it \
+               into an Agent: Implement node's blueprint input to avoid re-distilling.",
+        loopable: true,
+        version: 1,
+        inputs: vec![
+            FieldSpec::textarea("task", "Task")
+                .placeholder("Describe the task (or leave blank to use the task variable)")
+                .dynamic(),
+            FieldSpec::text("task_var", "Task variable").placeholder("input"),
+            FieldSpec::text("repo", "Repo (owner/name)")
+                .placeholder("inherits from ctx.vars[repo]; scopes the company vault context"),
+            // No model field: the distill is a likeness step and must use the professional's
+            // trained model (their LoRA) — a model override would undermine that.
+            output_var("blueprint"),
+        ],
+        outputs: vec![PortSpec::new("blueprint", "Blueprint", PortType::Text)],
+    });
+    m.push(NodeManifest {
         node_type: "extract_data",
         category: Category::UsingAi,
         label: "Extract Data",
@@ -917,8 +941,15 @@ pub fn manifests() -> Vec<NodeManifest> {
                 .placeholder("inherits from ctx.vars[repo]"),
             FieldSpec::text("base_branch", "Base branch").placeholder("main"),
             FieldSpec::text("branch", "Work branch").placeholder("auto: flaborful/task-…"),
-            FieldSpec::enumeration("backend", "Backend override", vec!["managed", "sprite"])
-                .advanced(),
+            FieldSpec::text("blueprint_var", "Blueprint variable")
+                .advanced()
+                .placeholder(
+                    "blueprint (from an upstream Build Blueprint node; else built inline)",
+                ),
+            // NOTE: the execution environment (managed / Claude Code / optimizer fbx-agent) is a
+            // WORKFLOW-level setting (Workflow Settings), not per-node — every sprite node in a run
+            // uses the same one so the fbx-agent session spans the whole DAG. So there is no per-node
+            // environment/backend field here.
             output_var("implementation"),
         ],
         outputs: vec![PortSpec::new(
@@ -1017,6 +1048,7 @@ pub fn manifests() -> Vec<NodeManifest> {
             FieldSpec::number("timeout_s", "Timeout (seconds)")
                 .placeholder("600")
                 .advanced(),
+            // Execution environment is workflow-level (see agent_implement note), not per node.
             output_var("gate_result"),
         ],
         outputs: vec![PortSpec::new("gate_result", "Result", PortType::Any)],
@@ -1164,6 +1196,18 @@ mod tests {
             &[],
         );
         assert!(problems.iter().any(|p| p.contains("method")));
+    }
+
+    #[test]
+    fn build_blueprint_node_is_registered_and_needs_no_required_config() {
+        // The node exists in the manifest, under Using AI, with a `blueprint` output port.
+        let m = manifest_for("build_blueprint").expect("build_blueprint manifest missing");
+        assert_eq!(m.label, "Build Blueprint");
+        assert!(m.outputs.iter().any(|p| p.key == "blueprint"));
+        // All inputs default (task/task_var/repo/output_var) — it's droppable with zero config.
+        assert!(validate_config("build_blueprint", &json!({}), &[]).is_empty());
+        // It must NOT expose a model override — the distill is a likeness (LoRA) step.
+        assert!(!m.inputs.iter().any(|f| f.key == "model_preference"));
     }
 
     #[test]

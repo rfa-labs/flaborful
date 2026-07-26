@@ -100,6 +100,50 @@ mod extract_json_tests {
     fn pure_json_unchanged() {
         assert_eq!(extract_json("{\"a\":1}"), "{\"a\":1}");
     }
+
+    #[test]
+    fn likeness_fallback_bypasses_optimizer_even_when_configured() {
+        use super::routes_to_optimizer;
+        // Generic Ollama traffic: routes to the optimizer when one is configured.
+        assert!(routes_to_optimizer(true, false));
+        // Likeness fallback (bypass=true): NEVER routes to the optimizer, even when configured —
+        // the LoRA lane is sacred. (The LoRA itself is served by cf_worker, which never consults
+        // the optimizer at all; this covers the LoRA-ABSENT fallback path.)
+        assert!(!routes_to_optimizer(true, true));
+        // No optimizer configured: never routes regardless of bypass.
+        assert!(!routes_to_optimizer(false, false));
+        assert!(!routes_to_optimizer(false, true));
+    }
+
+    // Serial (one test) because it mutates process-global env the optimizer route reads.
+    #[test]
+    fn optimizer_route_requires_both_url_and_key() {
+        use super::OptimizerRoute;
+        for k in [
+            "OPTIMIZER_BASE_URL",
+            "OPTIMIZER_API_KEY",
+            "OPTIMIZER_PROVIDER_KEY",
+        ] {
+            std::env::remove_var(k);
+        }
+        // Neither set → no routing (direct Ollama, the default).
+        assert!(OptimizerRoute::from_env().is_none());
+
+        // Only the URL → still none (a key is required to authenticate the tenant).
+        std::env::set_var("OPTIMIZER_BASE_URL", "https://opt.example/v1/");
+        assert!(OptimizerRoute::from_env().is_none());
+
+        // Both set → routing on; base URL trailing slash trimmed; provider key optional.
+        std::env::set_var("OPTIMIZER_API_KEY", "sk-opt-abc");
+        let route = OptimizerRoute::from_env().expect("both set => Some");
+        assert_eq!(route.base_url, "https://opt.example/v1");
+        assert_eq!(route.api_key, "sk-opt-abc");
+        assert!(route.provider_key.is_none());
+
+        for k in ["OPTIMIZER_BASE_URL", "OPTIMIZER_API_KEY"] {
+            std::env::remove_var(k);
+        }
+    }
 }
 
 /// Ollama Cloud — OpenAI-compatible API for orchestrator + embeddings.
@@ -113,11 +157,57 @@ pub struct InferenceClient {
     cf_account_id: Option<String>,
     cf_api_token: Option<String>,
     embed_model: Arc<Mutex<TextEmbedding>>,
+    /// When set (server env `OPTIMIZER_BASE_URL` + `OPTIMIZER_API_KEY`), `ollama_chat` routes
+    /// through the optimizer edge instead of hitting Ollama Cloud directly — every
+    /// orchestrate/worker call is then routed/cached/quality-gated/metered. Absent => direct
+    /// Ollama (the pre-existing behavior; keeps BYOK/direct paths intact).
+    optimizer: Option<OptimizerRoute>,
+}
+
+/// Opt-in routing of `InferenceClient` traffic through the optimizer edge (OpenAI-compatible).
+#[derive(Clone)]
+struct OptimizerRoute {
+    /// The edge base URL (e.g. `https://optimizer…/v1`).
+    base_url: String,
+    /// The optimizer API key (`sk-opt-…`) that authenticates the tenant.
+    api_key: String,
+    /// Optional upstream provider key (`x-provider-key`); `None` when the optimizer resolves it
+    /// server/tenant-side.
+    provider_key: Option<String>,
+}
+
+/// Whether an Ollama-path call should go through the optimizer edge: only when a route is present
+/// AND the caller didn't request a bypass. The bypass is how the likeness fallback stays direct —
+/// the LoRA lane is never optimizer-routed. Pure so the invariant is unit-testable.
+fn routes_to_optimizer(optimizer_present: bool, bypass: bool) -> bool {
+    optimizer_present && !bypass
+}
+
+impl OptimizerRoute {
+    /// Build from env, returning `None` unless both the base URL and key are configured.
+    fn from_env() -> Option<Self> {
+        let base_url = std::env::var("OPTIMIZER_BASE_URL")
+            .ok()
+            .filter(|s| !s.is_empty())?;
+        let api_key = std::env::var("OPTIMIZER_API_KEY")
+            .ok()
+            .filter(|s| !s.is_empty())?;
+        Some(Self {
+            base_url: base_url.trim_end_matches('/').to_string(),
+            api_key,
+            provider_key: std::env::var("OPTIMIZER_PROVIDER_KEY")
+                .ok()
+                .filter(|s| !s.is_empty()),
+        })
+    }
 }
 
 #[derive(Debug, Serialize)]
 struct ChatRequest {
-    model: String,
+    /// Omitted when routing through the optimizer with no pin, so the edge's router picks the
+    /// cheapest tier that holds quality (that's where routing savings come from).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model: Option<String>,
     messages: Vec<ChatMessage>,
     temperature: f32,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -183,6 +273,7 @@ impl InferenceClient {
             cf_account_id: None,
             cf_api_token: None,
             embed_model: init_embed_model(),
+            optimizer: None,
         }
     }
 
@@ -193,6 +284,13 @@ impl InferenceClient {
         let cf_account_id = std::env::var("CF_ACCOUNT_ID").ok();
         let cf_api_token = std::env::var("CF_API_TOKEN").ok();
 
+        let optimizer = OptimizerRoute::from_env();
+        if optimizer.is_some() {
+            tracing::info!(
+                "InferenceClient: routing orchestrate/worker calls through the optimizer edge"
+            );
+        }
+
         Self {
             client: build_http_client(),
             ollama_base_url: ollama_base_url.trim_end_matches('/').to_string(),
@@ -200,6 +298,7 @@ impl InferenceClient {
             cf_account_id,
             cf_api_token,
             embed_model: init_embed_model(),
+            optimizer,
         }
     }
 
@@ -209,11 +308,44 @@ impl InferenceClient {
         self.ollama_chat(&model, system, user, 0.2, json_mode).await
     }
 
-    /// Call the worker model with optional LoRA personalization.
+    /// The **likeness** path — a deliberate "represent the professional" call.
     ///
-    /// If `lora_id` is Some (a Cloudflare finetune_id) AND Cloudflare credentials
-    /// are configured, the request goes to Cloudflare Workers AI with the adapter active.
-    /// Otherwise falls back to Ollama Cloud base model (no personalization).
+    /// If `lora_id` is Some (a Cloudflare finetune_id) AND CF creds are configured, the request goes
+    /// to the professional's LoRA on Cloudflare Workers AI — and NEVER through the optimizer (the
+    /// LoRA is the specialist for likeness; it is never downshifted/routed away). When the LoRA is
+    /// absent (dev / no adapter yet), the fallback is the Ollama base model **direct**, also
+    /// bypassing the optimizer, so a likeness step is never silently re-routed even in fallback.
+    ///
+    /// Use this for every "in the professional's voice/taste/judgment" call (blueprint distill,
+    /// consult_principal, the ask-ai persona node, node chat, onboarding distill). Everything else
+    /// (generic reasoning/extraction) should use `orchestrate()` / `worker()`, which ARE
+    /// optimizer-routed.
+    pub async fn worker_likeness(
+        &self,
+        system: &str,
+        user: &str,
+        lora_id: Option<&str>,
+    ) -> Result<String> {
+        if let (Some(lora), Some(account_id), Some(token)) = (
+            lora_id,
+            self.cf_account_id.as_deref(),
+            self.cf_api_token.as_deref(),
+        ) {
+            // The LoRA (cf_worker) never touches the optimizer — structurally: it builds its own
+            // Cloudflare URL and does not consult `self.optimizer`.
+            return self
+                .cf_worker(account_id, token, system, user, Some(lora))
+                .await;
+        }
+        // Likeness fallback: base model DIRECT (bypass the optimizer) — likeness is never re-routed.
+        let model = std::env::var("WORKER_MODEL").unwrap_or_else(|_| "qwen2.5-coder:7b".into());
+        self.ollama_chat_inner(&model, system, user, 0.3, false, true)
+            .await
+    }
+
+    /// The generic worker path (LoRA-less). Optimizer-routed when configured. For non-likeness
+    /// worker-tier calls. Kept alongside `worker_likeness` so the two lanes are explicit + greppable.
+    #[allow(dead_code)]
     pub async fn worker(&self, system: &str, user: &str, lora_id: Option<&str>) -> Result<String> {
         if let (Some(lora), Some(account_id), Some(token)) = (
             lora_id,
@@ -224,8 +356,6 @@ impl InferenceClient {
                 .cf_worker(account_id, token, system, user, Some(lora))
                 .await;
         }
-
-        // Fallback: Ollama base model (no personalization)
         let model = std::env::var("WORKER_MODEL").unwrap_or_else(|_| "qwen2.5-coder:7b".into());
         self.ollama_chat(&model, system, user, 0.3, false).await
     }
@@ -242,6 +372,11 @@ impl InferenceClient {
 
     /// Cloudflare Workers AI inference with LoRA adapter.
     /// POST /accounts/{id}/ai/run/@cf/mistral/mistral-7b-instruct-v0.2-lora
+    ///
+    /// INVARIANT: this path never consults `self.optimizer` — the professional's LoRA is the
+    /// specialist for likeness and is never routed/downshifted by the optimizer edge. It builds its
+    /// own Cloudflare URL, so this holds structurally regardless of whether an optimizer route is
+    /// configured.
     async fn cf_worker(
         &self,
         account_id: &str,
@@ -298,6 +433,24 @@ impl InferenceClient {
         temperature: f32,
         json_mode: bool,
     ) -> Result<String> {
+        // Generic worker/orchestrator traffic: optimizer-routed when configured.
+        self.ollama_chat_inner(model, system, user, temperature, json_mode, false)
+            .await
+    }
+
+    /// The Ollama chat transport. `bypass_optimizer` forces a DIRECT-to-Ollama call even when an
+    /// optimizer route is configured — used by the likeness fallback so a "represent the
+    /// professional" step is never re-routed/downshifted by the edge (likeness is sacred, even in
+    /// the LoRA-absent fallback case).
+    async fn ollama_chat_inner(
+        &self,
+        model: &str,
+        system: &str,
+        user: &str,
+        temperature: f32,
+        json_mode: bool,
+        bypass_optimizer: bool,
+    ) -> Result<String> {
         let messages = vec![
             ChatMessage {
                 role: "system".into(),
@@ -313,8 +466,30 @@ impl InferenceClient {
             format_type: "json_object".into(),
         });
 
+        // Route through the optimizer edge when configured (and not bypassed), else Ollama Cloud
+        // directly. Through the optimizer we omit the model so its router picks the cheapest tier
+        // that holds quality (routing savings); direct, we pin the caller's model as before.
+        let route = self
+            .optimizer
+            .as_ref()
+            .filter(|_| routes_to_optimizer(true, bypass_optimizer));
+        let (url, bearer, provider_header, req_model) = match route {
+            Some(opt) => (
+                format!("{}/chat/completions", opt.base_url),
+                opt.api_key.clone(),
+                opt.provider_key.clone(),
+                None,
+            ),
+            None => (
+                format!("{}/chat/completions", self.ollama_base_url),
+                self.ollama_api_key.clone(),
+                None,
+                Some(model.to_string()),
+            ),
+        };
+
         let req_body = ChatRequest {
-            model: model.into(),
+            model: req_model,
             messages,
             temperature,
             response_format,
@@ -323,17 +498,14 @@ impl InferenceClient {
         // Retry once on transient transport failures (Ollama Cloud occasionally drops the socket
         // mid-stream — "connection closed before message completed"). HTTP error statuses are not
         // retried (they aren't transient); only send/transport errors are.
-        let url = format!("{}/chat/completions", self.ollama_base_url);
         let mut attempt = 0;
         let http_resp = loop {
             attempt += 1;
-            let result = self
-                .client
-                .post(&url)
-                .bearer_auth(&self.ollama_api_key)
-                .json(&req_body)
-                .send()
-                .await;
+            let mut builder = self.client.post(&url).bearer_auth(&bearer).json(&req_body);
+            if let Some(pk) = &provider_header {
+                builder = builder.header("x-provider-key", pk);
+            }
+            let result = builder.send().await;
             match result {
                 Ok(r) => break r.error_for_status()?,
                 Err(e) if attempt < 2 => {

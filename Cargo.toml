@@ -1,3 +1,9 @@
+# Cargo workspace: the flaborful-api server package (this dir) + the standalone fbx-agent crate.
+# fbx-agent is its own crate (crates/fbx-agent) with a minimal dependency set so it cross-compiles
+# to the sprite's Linux target without dragging in the server's ONNX/sqlx/native-tls deps.
+[workspace]
+members = [".", "crates/fbx-agent"]
+
 [package]
 name = "flaborful-api"
 version = "0.1.0"

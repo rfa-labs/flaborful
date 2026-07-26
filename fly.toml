@@ -25,6 +25,7 @@ primary_region = 'ewr'
   API_BASE_URL = 'https://flaborful-api.fly.dev'
   GITHUB_OAUTH_REDIRECT_URI = 'https://flaborful-api.fly.dev/auth/github/callback'
   GOOGLE_OAUTH_REDIRECT_URI = 'https://flaborful-api.fly.dev/auth/google/callback'
+  OPTIMIZER_BASE_URL= 'https://rfa-labs.com/v1'
 
 [http_service]
   internal_port = 8080

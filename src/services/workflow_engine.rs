@@ -33,6 +33,11 @@ pub struct ExecutionContext {
     /// that concurrent loop-mode iterations of the same child graph would otherwise hit. Drilling
     /// into child executions is a Phase-6 (run-log) concern.
     pub persist: bool,
+    /// The **workflow-level** execution environment (managed cloud / Claude Code BYOK / optimizer
+    /// fbx-agent). Set once for the whole run so every sprite node uses the SAME backend + coding
+    /// agent — fbx-agent's session spans the DAG without a foreign runtime stomping the tree.
+    /// `None` => the platform default (optimizer fbx-agent). Inherited by subflow child contexts.
+    pub execution_environment: Option<crate::services::execution::ExecutionEnvironment>,
 }
 
 /// Max subflow nesting depth. Beyond this a Subflow node errors rather than recursing further —
@@ -47,6 +52,7 @@ impl ExecutionContext {
         lora_name: Option<String>,
         persona_prompt: String,
         initial_input: Value,
+        execution_environment: Option<crate::services::execution::ExecutionEnvironment>,
     ) -> Self {
         let mut vars = HashMap::new();
         vars.insert("input".to_string(), initial_input);
@@ -60,6 +66,7 @@ impl ExecutionContext {
             effect_decisions: HashMap::new(),
             subflow_depth: 0,
             persist: true,
+            execution_environment,
         }
     }
 }
@@ -91,6 +98,27 @@ fn is_sprite_mutating(t: &NodeType) -> bool {
             | NodeType::GitPush
             | NodeType::TestGate
     )
+}
+
+/// Load a task's workflow-level execution environment (from the workflow the task runs). Returns
+/// `None` when unset or the value doesn't parse (→ the platform default, optimizer fbx-agent).
+pub async fn load_task_execution_environment(
+    db: &PgPool,
+    task_id: Uuid,
+) -> Option<crate::services::execution::ExecutionEnvironment> {
+    let row = sqlx::query!(
+        r#"SELECT w.execution_environment
+           FROM tasks t JOIN workflows w ON w.id = t.workflow_id
+           WHERE t.id = $1"#,
+        task_id
+    )
+    .fetch_optional(db)
+    .await
+    .ok()
+    .flatten()?;
+    row.execution_environment
+        .as_deref()
+        .and_then(crate::services::execution::ExecutionEnvironment::from_str_opt)
 }
 
 fn build_adjacency(graph: &WorkflowGraph) -> HashMap<String, Vec<String>> {
@@ -512,6 +540,8 @@ impl<'a> WorkflowEngine<'a> {
         persona_prompt: String,
         initial_input: Value,
     ) -> Result<ExecutionContext> {
+        // Preserve the workflow-level execution environment across resume/rerun.
+        let execution_environment = load_task_execution_environment(db, task_id).await;
         let mut ctx = ExecutionContext::new(
             task_id,
             agent_id,
@@ -519,6 +549,7 @@ impl<'a> WorkflowEngine<'a> {
             lora_name,
             persona_prompt,
             initial_input,
+            execution_environment,
         );
 
         // Re-inject the task's work-target (repo, base_branch, …) into ctx.vars, exactly as the
@@ -949,6 +980,7 @@ impl<'a> WorkflowEngine<'a> {
             NodeType::JoinPaths => self.run_join_paths(node, ctx).await,
             NodeType::ErrorShield => self.run_error_shield(node, ctx).await,
             NodeType::AskAi => self.run_ask_ai(node, ctx).await,
+            NodeType::BuildBlueprint => self.run_build_blueprint(node, ctx).await,
             NodeType::ExtractData => self.run_extract_data(node, ctx).await,
             NodeType::Categorizer => self.run_categorizer(node, ctx).await,
             NodeType::Scorer => self.run_scorer(node, ctx).await,
@@ -1096,7 +1128,7 @@ impl<'a> WorkflowEngine<'a> {
 
         let raw_output = self
             .inference
-            .worker(&system, &user_prompt, ctx.lora_name.as_deref())
+            .worker_likeness(&system, &user_prompt, ctx.lora_name.as_deref())
             .await?;
 
         // In document-author mode, strip any code fences so downstream gets clean JSON.
@@ -1520,11 +1552,75 @@ impl<'a> WorkflowEngine<'a> {
             "You are the professional's assistant. Answer the prompt directly and concisely.";
         let response = self
             .inference
-            .worker(system, &prompt, ctx.lora_name.as_deref())
+            .worker_likeness(system, &prompt, ctx.lora_name.as_deref())
             .await?;
         Ok(NodeResult::Continue {
             output_key: Self::output_key(node, "ai_response"),
             value: Value::String(response),
+        })
+    }
+
+    /// Build Blueprint: distill the professional's vault (+ the company repo overlay) into a
+    /// task-scoped brief in their voice, and emit it as a var for a downstream coding node. This is
+    /// the Execution Blueprint (`blueprint::build_blueprint`) surfaced as a composable node — the
+    /// one LoRA distill IS the "represent the professional" step. Writes the markdown to the output
+    /// var (default `blueprint`), which Agent: Implement will reuse instead of re-distilling.
+    async fn run_build_blueprint(
+        &self,
+        node: &WorkflowNode,
+        ctx: &mut ExecutionContext,
+    ) -> Result<NodeResult> {
+        // Task text: explicit config, else a var, else a default — same resolution as AgentImplement.
+        let task_text = node
+            .config
+            .get("task")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .or_else(|| {
+                let v = node
+                    .config
+                    .get("task_var")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("input");
+                ctx.vars.get(v).and_then(|x| {
+                    x.as_str().map(str::to_string).or_else(|| {
+                        x.get("description")
+                            .and_then(|d| d.as_str())
+                            .map(str::to_string)
+                    })
+                })
+            })
+            .unwrap_or_else(|| "Implement the requested change.".to_string());
+
+        // Repo (config, else ctx.vars["repo"]) scopes the company repo vault overlay.
+        let repo = node
+            .config
+            .get("repo")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .or_else(|| {
+                ctx.vars
+                    .get("repo")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+            });
+
+        let overlays = self.build_vault_overlays(ctx, repo.as_deref()).await;
+        let blueprint = crate::services::blueprint::build_blueprint(
+            self.db,
+            self.qdrant,
+            self.inference,
+            ctx.agent_id,
+            ctx.lora_name.as_deref(),
+            &ctx.persona_prompt,
+            &task_text,
+            &overlays,
+        )
+        .await?;
+
+        Ok(NodeResult::Continue {
+            output_key: Self::output_key(node, "blueprint"),
+            value: Value::String(blueprint),
         })
     }
 
@@ -2010,6 +2106,8 @@ impl<'a> WorkflowEngine<'a> {
             // Child subflow runs don't persist per-node rows (see field docs): avoids the concurrent
             // attempt-number race in loop mode and keeps the DAG inspector to the parent graph.
             persist: false,
+            // A subflow's SWE nodes run in the same environment as the parent workflow.
+            execution_environment: parent.execution_environment,
         };
 
         // Start at the subflow's Input nodes (its parameter boundary); if it has none, start at a
@@ -3051,6 +3149,26 @@ impl<'a> WorkflowEngine<'a> {
 
     // ── Work-execution nodes (pluggable backend) ──────────────────────────────
 
+    /// Resolve the run's **execution environment** into a concrete backend + coding-agent runtime.
+    /// The environment is chosen ONCE at the WORKFLOW level (not per node) so every sprite node in a
+    /// run uses the same backend + agent — this is what lets the fbx-agent's durable session span the
+    /// whole DAG without a foreign runtime stomping the shared working tree. Precedence:
+    /// the workflow's environment (`ctx.execution_environment`) → the platform default
+    /// (optimizer fbx-agent). Runs identically for every SWE node in the run.
+    fn resolve_execution_env(
+        &self,
+        ctx: &ExecutionContext,
+    ) -> (
+        crate::services::execution::ExecutionBackendKind,
+        Option<crate::services::execution::AgentRuntimeKind>,
+    ) {
+        use crate::services::execution::ExecutionEnvironment;
+        // Unset workflow environment => the platform default: the optimizer-routed fbx-agent.
+        ctx.execution_environment
+            .unwrap_or(ExecutionEnvironment::OptimizerFbx)
+            .resolve()
+    }
+
     /// Run a coding agent (Managed Agents / Sprite) to implement the task on a repo. The agent
     /// owns the read→edit→test→fix loop; its transcript streams into this node's logs and the
     /// resulting diff becomes the node output. Coarse-grained by design.
@@ -3059,27 +3177,15 @@ impl<'a> WorkflowEngine<'a> {
         node: &WorkflowNode,
         ctx: &mut ExecutionContext,
     ) -> Result<NodeResult> {
-        use crate::services::execution::{ExecutionBackendKind, TaskBrief};
+        use crate::services::execution::TaskBrief;
 
         let backends = self
             .backends
             .clone()
             .ok_or_else(|| anyhow!("AgentImplement: execution backends not configured"))?;
 
-        // Resolve backend: node override → agent default → managed.
-        let kind = match node.config.get("backend").and_then(|v| v.as_str()) {
-            Some(s) => ExecutionBackendKind::from_str_opt(s),
-            None => {
-                let row = sqlx::query!(
-                    "SELECT execution_backend FROM agents WHERE id = $1",
-                    ctx.agent_id
-                )
-                .fetch_optional(self.db)
-                .await?;
-                row.and_then(|r| ExecutionBackendKind::from_str_opt(&r.execution_backend))
-            }
-        }
-        .unwrap_or_default();
+        // Resolve the workflow-level execution environment into a concrete backend + runtime.
+        let (kind, runtime_override) = self.resolve_execution_env(ctx);
 
         // Task text: explicit config, else a var, else the task input description.
         let task_text = node
@@ -3149,31 +3255,53 @@ impl<'a> WorkflowEngine<'a> {
         // tools span its own vault + the company repo vault).
         let overlays = self.build_vault_overlays(ctx, repo.as_deref()).await;
 
-        // Context-engineering layer: assemble an Execution Blueprint from the professional's vault
-        // (style rules + architecture map + golden snippets, distilled in one LoRA call) plus the
-        // company repo context, and prepend it to the instructions. Gives the builder standing
-        // preferences + the codebase facts up front so it only escalates to consult_principal for
-        // genuine ambiguity. Best-effort — a vault miss or distill failure leaves it as-authored.
-        match crate::services::blueprint::build_blueprint(
-            self.db,
-            self.qdrant,
-            self.inference,
-            ctx.agent_id,
-            ctx.lora_name.as_deref(),
-            &ctx.persona_prompt,
-            &task_text,
-            &overlays,
-        )
-        .await
-        {
-            Ok(bp) if !bp.trim().is_empty() => {
-                instructions = Some(match instructions {
-                    Some(existing) => format!("{bp}\n\n{existing}"),
-                    None => bp,
-                });
-            }
-            Ok(_) => {}
-            Err(e) => tracing::warn!("blueprint assembly failed for task {}: {}", ctx.task_id, e),
+        // Context-engineering layer: the Execution Blueprint — the professional's vault (style
+        // rules + architecture map + golden snippets) plus company repo context, distilled in one
+        // LoRA call, prepended to the instructions so the builder starts grounded and only escalates
+        // to consult_principal for genuine ambiguity.
+        //
+        // Prefer a blueprint precomputed by an upstream Build Blueprint node (via `blueprint_var`,
+        // default `blueprint`) to avoid a second LoRA distill; otherwise build it inline. Note the
+        // overlays above are still built unconditionally — the taste token below depends on them for
+        // the agent's browse-tool scope, independent of who produced the blueprint.
+        let blueprint_var = node
+            .config
+            .get("blueprint_var")
+            .and_then(|v| v.as_str())
+            .unwrap_or("blueprint");
+        let precomputed = ctx
+            .vars
+            .get(blueprint_var)
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .filter(|s| !s.trim().is_empty());
+        let blueprint: Option<String> = match precomputed {
+            Some(bp) => Some(bp),
+            None => match crate::services::blueprint::build_blueprint(
+                self.db,
+                self.qdrant,
+                self.inference,
+                ctx.agent_id,
+                ctx.lora_name.as_deref(),
+                &ctx.persona_prompt,
+                &task_text,
+                &overlays,
+            )
+            .await
+            {
+                Ok(bp) if !bp.trim().is_empty() => Some(bp),
+                Ok(_) => None,
+                Err(e) => {
+                    tracing::warn!("blueprint assembly failed for task {}: {}", ctx.task_id, e);
+                    None
+                }
+            },
+        };
+        if let Some(bp) = blueprint {
+            instructions = Some(match instructions {
+                Some(existing) => format!("{bp}\n\n{existing}"),
+                None => bp,
+            });
         }
 
         // Mint a per-task taste token carrying the persona + LoRA + that overlay scope.
@@ -3186,6 +3314,9 @@ impl<'a> WorkflowEngine<'a> {
             &overlays,
         )
         .await?;
+
+        let optimizer_creds =
+            crate::services::execution::agent_optimizer_creds(self.db, ctx.agent_id).await;
 
         let brief = TaskBrief {
             task_id: ctx.task_id,
@@ -3207,6 +3338,24 @@ impl<'a> WorkflowEngine<'a> {
             .await,
             taste_token,
             api_base_url,
+            // Per-node model pin from the `model_preference` field; blank => the runtime uses
+            // the Implement default (env `FLABORFUL_MODEL_IMPLEMENT`).
+            model: node
+                .config
+                .get("model_preference")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
+            // Optimizer-edge creds for the fbx-agent runtime (agent key → server key; server
+            // base URL). Only consumed when the agent's runtime is fbx_agent; harmless otherwise.
+            optimizer_base_url: optimizer_creds.base_url.clone(),
+            optimizer_key: optimizer_creds.key.clone(),
+            provider_key: optimizer_creds.provider_key.clone(),
+            // The DAG blackboard, passed to the fbx-agent as this node's upstream inputs.
+            vars: serde_json::to_value(&ctx.vars).unwrap_or(serde_json::Value::Null),
+            // Per-node runtime from the resolved execution environment (Sprite backend).
+            runtime_override,
         };
 
         let backend = backends.get(kind);
@@ -3464,25 +3613,15 @@ impl<'a> WorkflowEngine<'a> {
         ctx: &mut ExecutionContext,
         fix_task: &str,
     ) -> Result<()> {
-        use crate::services::execution::{ExecutionBackendKind, TaskBrief};
+        use crate::services::execution::TaskBrief;
         let backends = self
             .backends
             .clone()
             .ok_or_else(|| anyhow!("TestGate: execution backends not configured"))?;
 
-        let kind = match node.config.get("backend").and_then(|v| v.as_str()) {
-            Some(s) => ExecutionBackendKind::from_str_opt(s),
-            None => {
-                let row = sqlx::query!(
-                    "SELECT execution_backend FROM agents WHERE id = $1",
-                    ctx.agent_id
-                )
-                .fetch_optional(self.db)
-                .await?;
-                row.and_then(|r| ExecutionBackendKind::from_str_opt(&r.execution_backend))
-            }
-        }
-        .unwrap_or_default();
+        // The builder-fix runs in the SAME workflow execution environment as the implement, so the
+        // fix is driven by the same backend + coding agent.
+        let (kind, runtime_override) = self.resolve_execution_env(ctx);
 
         let repo = ctx
             .vars
@@ -3515,6 +3654,9 @@ impl<'a> WorkflowEngine<'a> {
         )
         .await?;
 
+        let optimizer_creds =
+            crate::services::execution::agent_optimizer_creds(self.db, ctx.agent_id).await;
+
         let brief = TaskBrief {
             task_id: ctx.task_id,
             kind: crate::services::execution::TaskKind::Implement,
@@ -3540,6 +3682,20 @@ impl<'a> WorkflowEngine<'a> {
             .await,
             taste_token,
             api_base_url,
+            // Match the gate node's model pin so the fix runs on the same model as the
+            // implement; blank => the Implement default.
+            model: node
+                .config
+                .get("model_preference")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
+            optimizer_base_url: optimizer_creds.base_url.clone(),
+            optimizer_key: optimizer_creds.key.clone(),
+            provider_key: optimizer_creds.provider_key.clone(),
+            vars: serde_json::to_value(&ctx.vars).unwrap_or(serde_json::Value::Null),
+            runtime_override,
         };
 
         let backend = backends.get(kind);
@@ -4767,6 +4923,7 @@ mod tests {
             effect_decisions: HashMap::new(),
             subflow_depth: 0,
             persist: true,
+            execution_environment: None,
         }
     }
 

@@ -102,7 +102,7 @@ async fn set_persona(
 struct SetExecutionBody {
     /// managed | sprite
     execution_backend: String,
-    /// claude_code | codex | custom
+    /// claude_code | codex | custom | fbx_agent
     agent_runtime: String,
     runtime_spec: Option<serde_json::Value>,
     /// The professional's own Anthropic/Claude API key. When present and non-empty, it is
@@ -127,10 +127,10 @@ async fn set_execution(
     }
     if !matches!(
         body.agent_runtime.as_str(),
-        "claude_code" | "codex" | "custom"
+        "claude_code" | "codex" | "custom" | "fbx_agent"
     ) {
         return Err(crate::errors::AppError::BadRequest(
-            "agent_runtime must be claude_code, codex, or custom".into(),
+            "agent_runtime must be claude_code, codex, custom, or fbx_agent".into(),
         ));
     }
     sqlx::query!(

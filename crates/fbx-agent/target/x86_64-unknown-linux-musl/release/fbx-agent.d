@@ -1,0 +1,1 @@
+/crate/target/x86_64-unknown-linux-musl/release/fbx-agent: /crate/src/client.rs /crate/src/main.rs /crate/src/mcp.rs /crate/src/orchestrator.rs /crate/src/session.rs /crate/src/tool.rs /crate/src/tools.rs

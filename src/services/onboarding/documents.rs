@@ -116,7 +116,10 @@ pub async fn ingest_documents(
              the note body (markdown)."
         );
         let user = format!("# {}\n\n{}", doc.title, truncate(&doc.text, 6000));
-        let body = match inference.worker(&system, &user, lora.as_deref()).await {
+        let body = match inference
+            .worker_likeness(&system, &user, lora.as_deref())
+            .await
+        {
             Ok(b) if !b.trim().is_empty() => b,
             _ => truncate(&doc.text, 2000).to_string(), // degrade to raw excerpt rather than skip
         };

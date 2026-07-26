@@ -7,6 +7,7 @@
 pub mod claude_code;
 pub mod codex;
 pub mod custom;
+pub mod fbx_agent;
 
 use crate::services::execution::TaskBrief;
 
@@ -31,6 +32,13 @@ pub trait AgentRuntime: Send + Sync {
     /// Different agents use different config shapes (Claude Code `.mcp.json`, Codex TOML, …) but
     /// the same server URLs + per-task token. This is the ENTIRE per-runtime tool surface.
     fn mcp_config(&self, taste_url: &str, vault_url: &str) -> SpriteFile;
+
+    /// Extra files the backend writes into the sprite *before* launching the runtime (beyond the
+    /// MCP config). Default: none. The fbx-agent runtime uses this to drop its per-step config
+    /// JSON (optimizer creds, MCP urls, task, vars) that its CLI reads. Written like `mcp_config`.
+    fn prelaunch_files(&self, _brief: &TaskBrief) -> Vec<SpriteFile> {
+        Vec::new()
+    }
 
     /// The shell command (run in the repo dir) that drives the agent headlessly on the brief.
     /// `repo_dir` is the checkout path on the sprite. Should run to completion (the agent's own

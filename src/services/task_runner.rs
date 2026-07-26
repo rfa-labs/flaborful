@@ -56,7 +56,7 @@ impl TaskRunner {
         let task = sqlx::query!(
             r#"SELECT t.id, t.job_id, t.workflow_id, t.input, t.target,
                       a.id as agent_id, a.persona_system_prompt, a.cf_finetune_id,
-                      w.graph as "graph?"
+                      w.graph as "graph?", w.execution_environment as "execution_environment?"
                FROM tasks t
                JOIN jobs j ON j.id = t.job_id
                JOIN agents a ON a.id = j.agent_id
@@ -81,6 +81,13 @@ impl TaskRunner {
         // cf_finetune_id is the Cloudflare Workers AI finetune ID for this professional's adapter
         let lora_name = task.cf_finetune_id;
 
+        // Workflow-level execution environment (managed / claude-code-byok / optimizer-fbx), applied
+        // to every sprite node in the run. Null/unparseable => the platform default (optimizer-fbx).
+        let execution_environment = task
+            .execution_environment
+            .as_deref()
+            .and_then(crate::services::execution::ExecutionEnvironment::from_str_opt);
+
         // Inject any job integration credentials into context vars
         let mut ctx = ExecutionContext::new(
             task_id,
@@ -89,6 +96,7 @@ impl TaskRunner {
             lora_name,
             persona_prompt,
             task.input,
+            execution_environment,
         );
 
         // Inject the task's structured work-target as ctx vars (e.g. target.repo -> ctx.vars["repo"],

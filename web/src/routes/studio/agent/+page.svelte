@@ -29,8 +29,8 @@
   let retrainStarted = false;
 
   // Execution backend / runtime
-  let backend: 'managed' | 'sprite' = 'managed';
-  let runtime: 'claude_code' | 'codex' | 'custom' = 'claude_code';
+  let backend: 'managed' | 'sprite' = 'sprite';
+  let runtime: 'claude_code' | 'codex' | 'custom' | 'fbx_agent' = 'fbx_agent';
   // Custom-runtime template (install/MCP/invoke), edited as JSON. Only sent when runtime=custom.
   let runtimeSpecText = '';
   let savingExec = false;
@@ -472,6 +472,7 @@
           <div>
             <label class="label text-xs" for="runtime">Coding agent runtime</label>
             <select class="input text-sm" id="runtime" bind:value={runtime}>
+              <option value="fbx_agent">fbx-agent (optimizer-routed · cheapest)</option>
               <option value="claude_code">Claude Code</option>
               <option value="codex">Codex</option>
               <option value="custom">Custom</option>

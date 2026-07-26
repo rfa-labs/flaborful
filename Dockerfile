@@ -41,7 +41,13 @@ RUN apt-get update && apt-get install -y \
 # `prepare` still needs the [[bin]] target's path to exist, so stub it.
 FROM chef AS planner
 COPY Cargo.toml Cargo.lock ./
-RUN mkdir -p src && echo "fn main() {}" > src/main.rs
+# Root is a [workspace]; `cargo chef prepare` must be able to resolve every member's manifest, so
+# copy the fbx-agent member's Cargo.toml and stub its bin source too (same reason the root bin is
+# stubbed). Without this, prepare fails: "failed to load manifest for workspace member crates/fbx-agent".
+COPY crates/fbx-agent/Cargo.toml ./crates/fbx-agent/Cargo.toml
+RUN mkdir -p src crates/fbx-agent/src \
+  && echo "fn main() {}" > src/main.rs \
+  && echo "fn main() {}" > crates/fbx-agent/src/main.rs
 RUN cargo chef prepare --recipe-path recipe.json
 
 # ── Build stage ──────────────────────────────────────────────────────────────
