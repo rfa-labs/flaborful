@@ -44,6 +44,71 @@ impl StepControl {
 pub struct StepConfig {
     /// Max reason→tool cycles before we stop (the safety bound — never unbounded).
     pub max_steps: usize,
+    /// Approx input-token budget for the running conversation. Before each LLM call we compact the
+    /// history (evicting the oldest tool/assistant turns) to stay under this — so a documentation run
+    /// over a whole repo never balloons past the provider's context window (the real cause of the
+    /// `Input tokens exceed…` / `prompt too long` 400s that produced 0 notes). Derived from the pinned
+    /// model's window minus a safety cushion; see `main.rs`.
+    pub context_budget_tokens: usize,
+}
+
+/// Cheap token estimate: ~4 chars/token (good enough for budgeting; no tokenizer dep — matches the
+/// crate's minimal-deps rule). Counts the JSON-serialized message so tool_calls/args are included.
+fn est_tokens(msg: &Value) -> usize {
+    msg.to_string().len() / 4
+}
+
+fn history_tokens(messages: &[Value]) -> usize {
+    messages.iter().map(est_tokens).sum()
+}
+
+/// How many of the most-recent turns compaction always keeps intact (recent working context).
+const KEEP_RECENT: usize = 6;
+
+fn role_of(msg: &Value) -> &str {
+    msg.get("role").and_then(|r| r.as_str()).unwrap_or("")
+}
+
+/// Compact `messages` in place so the estimated token count fits `budget`, the way AAA coding agents
+/// do it (Claude Code "microcompaction" / OpenCode pruning): keep the durable head (the system prompt
+/// at index 0) and the most-recent turns; evict the OLDEST middle turns first (biggest bloat =
+/// old `read_file`/`run_command` tool results). Anything important was already written to the vault
+/// via `upsert_note`, so evicting stale in-context observations loses nothing.
+///
+/// Invariant preserved: never leave a `tool` message whose matching `assistant`(+tool_calls) turn was
+/// evicted — that yields the OpenAI 400 `messages with role 'tool' must be a response to a preceding
+/// tool_calls`. We evict in whole `assistant`→`tool…` groups from the front of the evictable region.
+fn compact_history(messages: &mut Vec<Value>, budget: usize) {
+    if history_tokens(messages) <= budget {
+        return;
+    }
+    // Preserve the head (system message if present) and a tail of recent turns.
+    let head = if messages.first().map(role_of) == Some("system") {
+        1
+    } else {
+        0
+    };
+    let keep_recent = KEEP_RECENT; // always keep the last few turns intact (recent working context)
+
+    // Evict the OLDEST turn-group from just after `head`, as a whole unit, so we never orphan a `tool`
+    // message from its `assistant`(+tool_calls) parent (that would 400 on OpenAI). A group is one
+    // non-system message plus any immediately-following `tool` messages (its tool results).
+    while history_tokens(messages) > budget {
+        let evictable_end = messages.len().saturating_sub(keep_recent);
+        if head >= evictable_end {
+            break; // only the head + recent tail remain — can't safely evict more
+        }
+        // Group = messages[head] and all consecutive `tool` messages after it. Removing them together
+        // keeps every remaining `tool` paired with its assistant. (If messages[head] is itself a
+        // stray `tool` — shouldn't happen given pairing — this still removes it cleanly.)
+        let mut group_end = head + 1;
+        while group_end < messages.len() && role_of(&messages[group_end]) == "tool" {
+            group_end += 1;
+        }
+        // Don't let a group reach into the retained recent tail.
+        let group_end = group_end.min(evictable_end.max(head + 1));
+        messages.drain(head..group_end);
+    }
 }
 
 /// Optimizer cost/savings aggregated over a step's LLM calls — what this node's work cost and saved
@@ -108,6 +173,9 @@ pub async fn run_step(
     const REPEAT_NUDGE_AT: u32 = 2;
 
     for _ in 0..cfg.max_steps {
+        // Bound the context BEFORE each call so the request never exceeds the provider window (the
+        // cause of the `Input tokens exceed…` 400s → 0 notes). Evicts the oldest tool/assistant turns.
+        compact_history(messages, cfg.context_budget_tokens);
         let turn = client.chat(messages, &schemas).await?;
         run.llm_calls += 1;
         run.cost.add(turn.savings());
@@ -197,7 +265,134 @@ async fn dispatch(tools: &ToolCatalog, tc: &ToolCall) -> String {
         );
     };
     match tool.call(&tc.function.arguments).await {
-        Ok(out) => out,
+        Ok(out) => cap_tool_output(&out),
         Err(e) => format!("error calling '{name}': {e}"),
+    }
+}
+
+/// Cap a single tool result so one huge `read_file`/`run_command`/`grep` can't blow the context
+/// window on its own (AAA "microcompaction": offload bulky tool results at the source). Keeps the
+/// head and tail (the informative ends) with a truncation marker between — the model still sees the
+/// file's shape without the whole body sitting in history forever. ~5k tokens ≈ 20k chars, matching
+/// Codex CLI's ~5k/file budget.
+fn cap_tool_output(out: &str) -> String {
+    const MAX_CHARS: usize = 20_000;
+    if out.len() <= MAX_CHARS {
+        return out.to_string();
+    }
+    let head_len = MAX_CHARS * 3 / 4;
+    let tail_len = MAX_CHARS - head_len;
+    // Slice on char boundaries.
+    let head_end = out
+        .char_indices()
+        .map(|(i, _)| i)
+        .take_while(|&i| i <= head_len)
+        .last()
+        .unwrap_or(0);
+    let tail_start = out
+        .char_indices()
+        .map(|(i, _)| i)
+        .rev()
+        .take_while(|&i| i >= out.len().saturating_sub(tail_len))
+        .last()
+        .unwrap_or(out.len());
+    let omitted = out
+        .len()
+        .saturating_sub(head_end)
+        .saturating_sub(out.len() - tail_start);
+    format!(
+        "{}\n\n…[truncated {omitted} bytes — output too large; read a specific range/file or grep for what you need]…\n\n{}",
+        &out[..head_end],
+        &out[tail_start..],
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn big_tool_msg(id: &str, bytes: usize) -> Value {
+        json!({ "role": "tool", "tool_call_id": id, "content": "x".repeat(bytes) })
+    }
+    fn assistant_call(id: &str) -> Value {
+        json!({ "role": "assistant", "content": "", "tool_calls": [
+            { "id": id, "type": "function", "function": { "name": "read_file", "arguments": "{}" } }
+        ]})
+    }
+
+    #[test]
+    fn compact_keeps_system_and_recent_and_fits_budget() {
+        let mut messages = vec![json!({ "role": "system", "content": "rules" })];
+        // 20 assistant→tool pairs, each tool result ~4k chars (~1k tokens).
+        for i in 0..20 {
+            messages.push(assistant_call(&format!("c{i}")));
+            messages.push(big_tool_msg(&format!("c{i}"), 4000));
+        }
+        let before_len = messages.len();
+        let before = history_tokens(&messages);
+        compact_history(&mut messages, 3000); // force heavy eviction
+        let after = history_tokens(&messages);
+
+        assert!(after < before, "should have evicted");
+        // Evicted the bulk of the 41 messages (down toward the head + recent tail), not just a few.
+        assert!(
+            messages.len() <= before_len / 2,
+            "should have removed most messages"
+        );
+        // System message survives at the head.
+        assert_eq!(role_of(&messages[0]), "system");
+        // No orphan: every `tool` message must be preceded somewhere by an assistant turn (we never
+        // leave a leading tool right after the system head).
+        assert_ne!(
+            role_of(&messages[1]),
+            "tool",
+            "first post-system msg must not be an orphan tool"
+        );
+    }
+
+    #[test]
+    fn compact_never_orphans_a_tool_message() {
+        // After compaction, every `tool` message must be immediately preceded by an `assistant`
+        // (its tool_calls parent) — otherwise the provider 400s. Force heavy eviction and check.
+        let mut messages = vec![json!({ "role": "system", "content": "rules" })];
+        for i in 0..15 {
+            messages.push(assistant_call(&format!("c{i}")));
+            messages.push(big_tool_msg(&format!("c{i}"), 3000));
+        }
+        compact_history(&mut messages, 2000);
+        for (i, m) in messages.iter().enumerate() {
+            if role_of(m) == "tool" {
+                assert!(
+                    i > 0 && role_of(&messages[i - 1]) == "assistant",
+                    "tool at {i} is orphaned (prev = {:?})",
+                    messages.get(i - 1).map(role_of)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn compact_noop_when_under_budget() {
+        let mut messages = vec![
+            json!({ "role": "system", "content": "rules" }),
+            json!({ "role": "user", "content": "task" }),
+        ];
+        let before = messages.clone();
+        compact_history(&mut messages, 1_000_000);
+        assert_eq!(messages, before);
+    }
+
+    #[test]
+    fn cap_tool_output_truncates_large_and_preserves_small() {
+        let small = "hello world";
+        assert_eq!(cap_tool_output(small), small);
+
+        let big = "A".repeat(50_000);
+        let capped = cap_tool_output(&big);
+        assert!(capped.len() < big.len());
+        assert!(capped.contains("truncated"));
+        assert!(capped.starts_with("AAAA"));
+        assert!(capped.ends_with("AAAA"));
     }
 }

@@ -365,6 +365,26 @@ pub fn default_model(kind: TaskKind) -> String {
     }
 }
 
+/// The default model for the **fbx-agent** runtime specifically. Unlike `default_model` (whose ids
+/// feed Claude Code's `ANTHROPIC_MODEL` and so must be real Anthropic ids), fbx-agent routes every
+/// call through the **optimizer edge** as an OpenAI-style tool-calling agent — so its pinned model
+/// MUST be a provider the edge can serve tools through. The edge's Anthropic provider does NOT
+/// translate OpenAI tool messages (it 400s on `role:"tool"`), so a `claude-*` pin here guarantees a
+/// tool-call failure. Pin **OpenAI tool-capable** ids instead: the edge's `owner_of` routes `gpt-*`
+/// to the OpenAiCompat provider (correct tool handling), then the resilience chain falls back to
+/// Ollama, etc. Env overrides mirror `default_model`. (Likeness lane is untouched — it never routes
+/// here.)
+pub fn fbx_default_model(kind: TaskKind) -> String {
+    match kind {
+        TaskKind::Implement => {
+            std::env::var("FLABORFUL_MODEL_IMPLEMENT").unwrap_or_else(|_| "gpt-5.4".into())
+        }
+        TaskKind::Ingest => {
+            std::env::var("FLABORFUL_MODEL_INGEST").unwrap_or_else(|_| "gpt-5.4-mini".into())
+        }
+    }
+}
+
 impl TaskBrief {
     /// The URL the agent's MCP/custom taste tool calls to reach `consult_principal`.
     pub fn taste_url(&self) -> String {
@@ -441,9 +461,9 @@ pub trait ExecutionBackend: Send + Sync {
 
 #[cfg(test)]
 mod tests {
-    use super::{default_model, TaskKind};
+    use super::{default_model, fbx_default_model, TaskKind};
 
-    // One test, run serially, because `default_model` reads process-global env vars — splitting
+    // One test, run serially, because these read process-global env vars — splitting
     // it would let parallel tests race on the same vars.
     #[test]
     fn default_model_defaults_and_env_overrides() {
@@ -456,9 +476,24 @@ mod tests {
         assert_eq!(implement, "claude-opus-4-8");
         assert_eq!(ingest, "claude-haiku-4-5");
 
-        // Env overrides win.
+        // fbx-agent routes through the optimizer edge as an OpenAI-style tool-calling agent, so its
+        // defaults must be OpenAI tool-capable ids (a `claude-*` pin would 400 on tool messages).
+        let fbx_implement = fbx_default_model(TaskKind::Implement);
+        let fbx_ingest = fbx_default_model(TaskKind::Ingest);
+        assert!(
+            fbx_implement.starts_with("gpt-"),
+            "fbx implement must be an OpenAI id"
+        );
+        assert!(
+            fbx_ingest.starts_with("gpt-"),
+            "fbx ingest must be an OpenAI id"
+        );
+        assert_ne!(fbx_implement, fbx_ingest);
+
+        // Env overrides win (shared with `default_model` — same env vars).
         std::env::set_var("FLABORFUL_MODEL_INGEST", "some-cheap-model");
         assert_eq!(default_model(TaskKind::Ingest), "some-cheap-model");
+        assert_eq!(fbx_default_model(TaskKind::Ingest), "some-cheap-model");
         std::env::remove_var("FLABORFUL_MODEL_INGEST");
     }
 

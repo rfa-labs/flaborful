@@ -67,10 +67,36 @@ struct StepInput {
     /// Loop safety bound.
     #[serde(default = "default_max_steps")]
     max_steps: usize,
+    /// Approx input-token budget for the running conversation before we compact it. Optional: when
+    /// unset we derive a safe default from the pinned model's context window (see `context_budget`).
+    #[serde(default)]
+    context_budget_tokens: Option<usize>,
 }
 
 fn default_max_steps() -> usize {
     40
+}
+
+/// The context-token budget to compact the history down to before each call. Use the configured
+/// value if the engine set one; otherwise derive from the pinned model's window minus a safety
+/// cushion (AAA guidance: compact at ~80-85%, never 95%). Conservative windows keep us well under the
+/// providers' hard limits seen in the wild (OpenAI ~272k, Ollama ~163k).
+fn context_budget(input: &StepInput) -> usize {
+    if let Some(b) = input.context_budget_tokens {
+        return b;
+    }
+    let model = input.model.as_deref().unwrap_or("");
+    // Window (tokens) → budget at ~80%. Match on model family; default conservative for the unknown.
+    let window: usize = if model.starts_with("gpt-5") {
+        272_000
+    } else if model.contains("gpt-oss") || model.contains("ollama") {
+        160_000
+    } else if model.starts_with("claude-") {
+        200_000
+    } else {
+        128_000 // unknown model → stay safe
+    };
+    window * 4 / 5
 }
 
 #[tokio::main]
@@ -187,6 +213,7 @@ async fn run(input: StepInput) -> anyhow::Result<Value> {
 
     let cfg = StepConfig {
         max_steps: input.max_steps,
+        context_budget_tokens: context_budget(&input),
     };
     let step = run_step(&client, &catalog, &control, &cfg, &mut session.messages).await?;
 

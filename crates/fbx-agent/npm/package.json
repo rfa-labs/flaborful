@@ -1,6 +1,6 @@
 {
   "name": "@rfa-labs/fbx-agent",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "flaborful's DAG-aware coding orchestrator that runs inside a Sprite and routes every LLM call through the optimizer edge. Installed on the sprite the same way as Claude Code / Codex.",
   "bin": {
     "fbx-agent": "bin/fbx-agent.js"

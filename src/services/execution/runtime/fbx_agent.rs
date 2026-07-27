@@ -11,7 +11,7 @@
 //! so they never enter the diff/commit/PR — no `.git/info/exclude` dance needed.
 
 use super::{AgentRuntime, InstallSpec, SpriteFile};
-use crate::services::execution::{default_model, TaskBrief};
+use crate::services::execution::{fbx_default_model, TaskBrief};
 
 /// Where the per-step config + durable session live on the sprite (outside the repo checkout).
 const FBX_DIR: &str = "/workspace/.fbx";
@@ -53,7 +53,7 @@ impl AgentRuntime for FbxAgentRuntime {
         let model = brief
             .model
             .clone()
-            .unwrap_or_else(|| default_model(brief.kind));
+            .unwrap_or_else(|| fbx_default_model(brief.kind));
 
         let cfg = serde_json::json!({
             "repo_dir": crate::services::execution::sprite::REPO_DIR_PUB,

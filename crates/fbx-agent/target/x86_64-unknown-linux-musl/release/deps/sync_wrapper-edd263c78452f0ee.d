@@ -1,7 +1,0 @@
-/crate/target/x86_64-unknown-linux-musl/release/deps/sync_wrapper-edd263c78452f0ee.d: /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sync_wrapper-0.1.2/src/lib.rs
-
-/crate/target/x86_64-unknown-linux-musl/release/deps/libsync_wrapper-edd263c78452f0ee.rlib: /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sync_wrapper-0.1.2/src/lib.rs
-
-/crate/target/x86_64-unknown-linux-musl/release/deps/libsync_wrapper-edd263c78452f0ee.rmeta: /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sync_wrapper-0.1.2/src/lib.rs
-
-/usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sync_wrapper-0.1.2/src/lib.rs:
