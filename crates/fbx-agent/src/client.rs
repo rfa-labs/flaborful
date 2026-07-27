@@ -35,6 +35,50 @@ pub struct Turn {
     pub raw: Value,
 }
 
+/// Per-call optimizer cost/savings, read from the edge's `optimizer` block. `served` is the
+/// optimized-path cost alone (the honest "through us" figure); `exploration` is the extra
+/// learning double-spend (converges to zero as a task class becomes learned-safe). Zeros if the
+/// block is absent. Ported from custom-agents' `agent-core::CallSavings`.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CallSavings {
+    pub baseline: f64,
+    pub actual: f64,
+    pub served: f64,
+    pub exploration: f64,
+    pub saved: f64,
+    /// Whether the edge served this call from cache (a free turn).
+    pub cache_hit: bool,
+}
+
+impl Turn {
+    /// The optimizer's per-call cost/savings for this turn (from `raw.optimizer`).
+    pub fn savings(&self) -> CallSavings {
+        let o = self.raw.get("optimizer");
+        let f = |k: &str| {
+            o.and_then(|o| o.get(k))
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0)
+        };
+        // `served_cost` is a newer field; fall back to `actual_cost` if an older edge omits it.
+        let actual = f("actual_cost");
+        let served = o
+            .and_then(|o| o.get("served_cost"))
+            .and_then(|v| v.as_f64())
+            .unwrap_or(actual);
+        CallSavings {
+            baseline: f("baseline_cost"),
+            actual,
+            served,
+            exploration: f("exploration_cost"),
+            saved: f("saving"),
+            cache_hit: o
+                .and_then(|o| o.get("cache_hit"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+        }
+    }
+}
+
 /// A native OpenAI tool call the model emitted.
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct ToolCall {
@@ -131,5 +175,55 @@ impl OptimizerClient {
             model_served,
             raw: json,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn turn_with_optimizer(opt: Value) -> Turn {
+        Turn {
+            content: None,
+            tool_calls: vec![],
+            model_served: "gpt-5.4".into(),
+            raw: json!({ "optimizer": opt }),
+        }
+    }
+
+    #[test]
+    fn savings_parses_the_optimizer_block() {
+        let s = turn_with_optimizer(json!({
+            "cache_hit": false,
+            "baseline_cost": 0.001,
+            "actual_cost": 0.0004,
+            "served_cost": 0.0004,
+            "exploration_cost": 0.0,
+            "saving": 0.0006
+        }))
+        .savings();
+        assert_eq!(s.baseline, 0.001);
+        assert_eq!(s.served, 0.0004);
+        assert_eq!(s.saved, 0.0006);
+        assert!(!s.cache_hit);
+    }
+
+    #[test]
+    fn savings_defaults_served_to_actual_and_zeros_when_absent() {
+        // Older edge without served_cost → served falls back to actual.
+        let s = turn_with_optimizer(json!({ "actual_cost": 0.002, "cache_hit": true })).savings();
+        assert_eq!(s.served, 0.002);
+        assert!(s.cache_hit);
+        // No optimizer block at all → all zeros.
+        let none = Turn {
+            content: None,
+            tool_calls: vec![],
+            model_served: "m".into(),
+            raw: json!({}),
+        }
+        .savings();
+        assert_eq!(none.baseline, 0.0);
+        assert_eq!(none.saved, 0.0);
     }
 }

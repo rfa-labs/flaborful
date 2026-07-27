@@ -760,6 +760,8 @@ impl ManagedAgentsBackend {
             test_summary: None,
             head_sha: None,
             status: "completed".into(),
+            // Managed Agents runs on Anthropic directly, not the optimizer edge — no cost block.
+            cost: None,
         })
     }
 }

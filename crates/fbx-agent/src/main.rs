@@ -198,6 +198,7 @@ async fn run(input: StepInput) -> anyhow::Result<Value> {
     let llm_calls = step.llm_calls;
     let tool_invocations = step.tool_invocations;
     let budget_exhausted = step.budget_exhausted;
+    let c = step.cost;
 
     // Assemble the outcome for the engine.
     let (output, summary) = match step.step_output {
@@ -220,6 +221,19 @@ async fn run(input: StepInput) -> anyhow::Result<Value> {
         "tool_invocations": tool_invocations,
         "budget_exhausted": budget_exhausted,
         "completed": completed,
+        // Optimizer cost/savings for this node's step (what it cost through the edge + saved vs the
+        // tenant's baseline). `served` is the honest optimized-path cost; `saved` clamps to ~0 while
+        // a task class is still exploring (paying for two calls to learn). The engine lifts this onto
+        // the node output → the executions UI.
+        "cost": {
+            "baseline": c.baseline,
+            "actual": c.actual,
+            "served": c.served,
+            "exploration": c.exploration,
+            "saved": c.saved,
+            "cache_hits": c.cache_hits,
+            "llm_calls": llm_calls,
+        },
     }))
 }
 

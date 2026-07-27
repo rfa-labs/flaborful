@@ -164,6 +164,27 @@ impl TranscriptSink for IngestionSink {
         {
             tracing::warn!(owner = %self.owner_id, repo = %self.repo, "ingestion agent error: {chunk}");
         }
+
+        // Ingestion is diagnostically blind without this: the whole sprite run (creating/cloning/
+        // running the agent) and the agent's own transcript stream through push() and are otherwise
+        // dropped, so a silent 0-notes run leaves NOTHING in `tracing` explaining what happened
+        // (e.g. `command not found` when the runtime binary didn't install). Mirror a small whitelist
+        // of low-volume, high-signal lines to the server logs — NOT the token firehose:
+        //  - `[sprite] …` lifecycle breadcrumbs (creating / repo cloned / running coding agent / etc.)
+        //  - runtime install/invoke failures (`command not found`, `npm ERR`)
+        //  - the fbx-agent `===FBX_RESULT===` result envelope
+        let trimmed = chunk.trim_start();
+        let is_sprite_line = trimmed.starts_with("[sprite]");
+        let is_install_fail = chunk.contains("command not found") || chunk.contains("npm ERR");
+        let is_result_envelope =
+            chunk.contains("===FBX_RESULT===") || chunk.contains("===END_FBX_RESULT===");
+        if is_sprite_line || is_install_fail || is_result_envelope {
+            if is_install_fail {
+                tracing::warn!(owner = %self.owner_id, repo = %self.repo, "ingestion runtime failure: {}", chunk.trim());
+            } else {
+                tracing::info!(owner = %self.owner_id, repo = %self.repo, "ingestion: {}", chunk.trim());
+            }
+        }
     }
 }
 

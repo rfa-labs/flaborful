@@ -46,6 +46,31 @@ pub struct StepConfig {
     pub max_steps: usize,
 }
 
+/// Optimizer cost/savings aggregated over a step's LLM calls — what this node's work cost and saved
+/// vs. the tenant's baseline model. Summed from each `Turn::savings()`.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct RunCost {
+    pub baseline: f64,
+    pub actual: f64,
+    pub served: f64,
+    pub exploration: f64,
+    pub saved: f64,
+    pub cache_hits: usize,
+}
+
+impl RunCost {
+    fn add(&mut self, c: crate::client::CallSavings) {
+        self.baseline += c.baseline;
+        self.actual += c.actual;
+        self.served += c.served;
+        self.exploration += c.exploration;
+        self.saved += c.saved;
+        if c.cache_hit {
+            self.cache_hits += 1;
+        }
+    }
+}
+
 /// The outcome of running one node's step.
 #[derive(Debug, Default)]
 pub struct StepRun {
@@ -57,6 +82,8 @@ pub struct StepRun {
     pub tool_invocations: usize,
     /// Whether the step budget was hit without a clean completion.
     pub budget_exhausted: bool,
+    /// Optimizer cost/savings summed over this step's LLM calls.
+    pub cost: RunCost,
 }
 
 /// Run the loop over `messages` (the durable conversation history, mutated in place so the caller
@@ -83,6 +110,7 @@ pub async fn run_step(
     for _ in 0..cfg.max_steps {
         let turn = client.chat(messages, &schemas).await?;
         run.llm_calls += 1;
+        run.cost.add(turn.savings());
 
         // Record the assistant turn verbatim into history (so tool_call_ids line up).
         if let Some(assistant_msg) = turn.raw.pointer("/choices/0/message") {

@@ -31,6 +31,15 @@
   function arr(o: Record<string, unknown> | null, k: string): unknown[] {
     return o && Array.isArray(o[k]) ? (o[k] as unknown[]) : [];
   }
+  function num(o: Record<string, unknown> | null, k: string): number {
+    return o && typeof o[k] === 'number' ? (o[k] as number) : 0;
+  }
+  // Format a USD cost: 4 sig-ish figures for small values, so $0.0293 doesn't show as $0.03.
+  function usd(n: number): string {
+    if (n === 0) return '$0';
+    if (n < 0.01) return `$${n.toFixed(4)}`;
+    return `$${n.toFixed(2)}`;
+  }
 
   $: obj = isObj(value) ? value : null;
   $: diffText = str(obj, 'diff');
@@ -46,6 +55,18 @@
   $: resourceId = str(obj, 'resource_id');
   $: artifactUrl = str(obj, 'pr_url') || str(obj, 'url') || '';
   $: stringValue = typeof value === 'string' ? value : '';
+
+  // Optimizer cost/savings (fbx-agent runs route every LLM call through the edge). Present only when
+  // the run used the optimizer. `served` = the honest optimized-path cost; `saved` = vs the baseline
+  // model. `saved ≈ 0` with actual > served means an *exploration* run (the optimizer paid for two
+  // calls to learn this task class — savings kick in once it's learned-safe).
+  $: cost = isObj(obj?.['cost']) ? (obj!['cost'] as Record<string, unknown>) : null;
+  $: costServed = num(cost, 'served');
+  $: costSaved = num(cost, 'saved');
+  $: costActual = num(cost, 'actual');
+  $: costCalls = num(cost, 'llm_calls');
+  $: costCacheHits = num(cost, 'cache_hits');
+  $: isExploration = !!cost && costSaved < 0.000001 && costActual > costServed + 0.000001;
 
   let showTranscript = false;
   let showRaw = false;
@@ -73,6 +94,24 @@
   <div class="space-y-3">
     {#if status}
       <span class="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded {status === 'completed' ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700'}">{status}</span>
+    {/if}
+
+    {#if cost}
+      <!-- Optimizer cost/savings for this run (routed through the edge). -->
+      <div class="rounded-md border border-sand-200 bg-sand-50 px-3 py-2">
+        <div class="flex items-baseline gap-3 flex-wrap">
+          <span class="text-[11px] font-semibold text-sand-500 uppercase tracking-wide">Optimizer</span>
+          <span class="text-sm text-sand-800">cost <span class="font-semibold">{usd(costServed)}</span></span>
+          {#if costSaved > 0.000001}
+            <span class="text-sm text-green-700">saved <span class="font-semibold">{usd(costSaved)}</span> vs baseline</span>
+          {:else if isExploration}
+            <span class="text-xs text-sand-500">learning this task type — savings begin once it's proven safe to downshift</span>
+          {/if}
+          <span class="text-[11px] text-sand-400 ml-auto">
+            {costCalls} call{costCalls === 1 ? '' : 's'}{#if costCacheHits > 0} · {costCacheHits} cached{/if}
+          </span>
+        </div>
+      </div>
     {/if}
 
     {#if summaryText}

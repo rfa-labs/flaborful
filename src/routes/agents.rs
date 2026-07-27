@@ -26,6 +26,7 @@ pub fn router() -> Router<AppState> {
         .route("/:id/retrain/preview", post(preview_retrain))
         .route("/:id/reset", post(reset_agent))
         .route("/:id/execution", patch(set_execution))
+        .route("/:id/optimizer-savings", get(optimizer_savings))
         .route("/:id/anthropic-key", patch(set_anthropic_key))
         .route("/:id/persona", patch(set_persona))
         .route(
@@ -168,6 +169,60 @@ async fn set_execution(
     }
 
     Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+/// GET /agents/:id/optimizer-savings — the agent's cumulative cost/savings through the optimizer.
+/// Proxies the optimizer edge's `/v1/dashboard/savings` with the agent's (or server) `sk-opt-…` key;
+/// in the edge's auth mode the tenant is taken from that key, so it returns exactly this agent's
+/// ledger. Returns `{ configured: false }` when the optimizer isn't set up (so the UI can hide the
+/// card gracefully). Read-only; never fails the page.
+async fn optimizer_savings(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<Uuid>,
+) -> AppResult<Json<serde_json::Value>> {
+    authz::require_agent_owner(&state.db, auth.user_id, id).await?;
+
+    let creds = crate::services::execution::agent_optimizer_creds(&state.db, id).await;
+    let (Some(base), Some(key)) = (creds.base_url, creds.key) else {
+        return Ok(Json(serde_json::json!({ "configured": false })));
+    };
+
+    // The dashboard endpoint lives at `<base>/dashboard/savings` (base already ends in `/v1`).
+    let url = format!("{}/dashboard/savings", base.trim_end_matches('/'));
+    let resp = reqwest::Client::new()
+        .get(&url)
+        .bearer_auth(&key)
+        .send()
+        .await;
+    match resp {
+        Ok(r) if r.status().is_success() => match r.json::<serde_json::Value>().await {
+            Ok(mut v) => {
+                if let Some(obj) = v.as_object_mut() {
+                    obj.insert("configured".into(), serde_json::Value::Bool(true));
+                }
+                Ok(Json(v))
+            }
+            Err(e) => {
+                tracing::warn!("optimizer savings parse failed: {e}");
+                Ok(Json(
+                    serde_json::json!({ "configured": true, "error": "unavailable" }),
+                ))
+            }
+        },
+        Ok(r) => {
+            tracing::warn!("optimizer savings returned {}", r.status());
+            Ok(Json(
+                serde_json::json!({ "configured": true, "error": "unavailable" }),
+            ))
+        }
+        Err(e) => {
+            tracing::warn!("optimizer savings request failed: {e}");
+            Ok(Json(
+                serde_json::json!({ "configured": true, "error": "unavailable" }),
+            ))
+        }
+    }
 }
 
 #[derive(Deserialize)]

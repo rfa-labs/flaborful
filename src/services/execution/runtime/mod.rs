@@ -51,4 +51,11 @@ pub trait AgentRuntime: Send + Sync {
     fn parse_summary(&self, _transcript: &str) -> Option<String> {
         None
     }
+
+    /// Extract per-run optimizer cost/savings from the transcript, if the runtime emits it. Default:
+    /// none (runtimes that don't route through the optimizer). fbx-agent overrides this to read the
+    /// `cost` block from its result envelope, so the engine can surface it on the node/run.
+    fn parse_cost(&self, _transcript: &str) -> Option<serde_json::Value> {
+        None
+    }
 }

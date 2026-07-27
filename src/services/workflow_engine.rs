@@ -3417,6 +3417,9 @@ impl<'a> WorkflowEngine<'a> {
                 "head_sha": result.head_sha,
                 "branch": branch,
                 "status": result.status,
+                // Optimizer cost/savings for this run (fbx-agent only; None otherwise) → persists in
+                // node_executions.output_json → the executions UI cost chip.
+                "cost": result.cost,
             }),
         })
     }

@@ -97,6 +97,15 @@ impl AgentRuntime for FbxAgentRuntime {
             .map(str::to_string)
             .filter(|s| !s.is_empty())
     }
+
+    fn parse_cost(&self, transcript: &str) -> Option<serde_json::Value> {
+        // Lift the `cost` block (baseline/served/saved/… ) from the same `===FBX_RESULT===` envelope.
+        let start = transcript.find(FBX_RESULT_BEGIN)? + FBX_RESULT_BEGIN.len();
+        let rest = &transcript[start..];
+        let end = rest.find(FBX_RESULT_END)?;
+        let json: serde_json::Value = serde_json::from_str(rest[..end].trim()).ok()?;
+        json.get("cost").cloned().filter(|c| !c.is_null())
+    }
 }
 
 /// Delimiters wrapping fbx-agent's JSON result envelope (kept in sync with the fbx-agent binary's
@@ -118,6 +127,22 @@ mod tests {
             FbxAgentRuntime.parse_summary(transcript),
             Some("added the endpoint".to_string())
         );
+    }
+
+    #[test]
+    fn parse_cost_lifts_the_cost_block() {
+        let transcript = "…\n===FBX_RESULT===\n\
+             {\"ok\":true,\"summary\":\"s\",\"cost\":{\"baseline\":0.01,\"served\":0.004,\"saved\":0.006}}\n\
+             ===END_FBX_RESULT===\n";
+        let cost = FbxAgentRuntime
+            .parse_cost(transcript)
+            .expect("cost present");
+        assert_eq!(cost["saved"], 0.006);
+        assert_eq!(cost["served"], 0.004);
+        // No cost block → None.
+        assert!(FbxAgentRuntime
+            .parse_cost("===FBX_RESULT===\n{\"ok\":true}\n===END_FBX_RESULT===")
+            .is_none());
     }
 
     #[test]

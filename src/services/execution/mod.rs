@@ -404,6 +404,11 @@ pub struct ExecResult {
     pub head_sha: Option<String>,
     /// completed | failed
     pub status: String,
+    /// Optimizer cost/savings for this run (only the fbx-agent runtime emits it — every LLM call
+    /// went through the edge). `{ baseline, actual, served, exploration, saved, cache_hits, llm_calls }`.
+    /// `None` for runtimes that don't route through the optimizer. Surfaced on the node/run in the UI.
+    #[serde(default)]
+    pub cost: Option<serde_json::Value>,
 }
 
 /// A sink the backend writes transcript chunks to as the agent works, so the DAG inspector can

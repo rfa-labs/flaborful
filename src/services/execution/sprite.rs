@@ -340,12 +340,33 @@ impl SpriteBackend {
         provisioning: &SpriteProvisioning,
         runtime: &dyn AgentRuntime,
     ) -> Result<ExecResult> {
-        // Install the runtime + write its MCP config pointing at the shared taste endpoint.
+        // Install the runtime + write its MCP config pointing at the shared taste endpoint. Installs
+        // are best-effort (a transient npm hiccup shouldn't abort the whole run — the binary may
+        // already be present, or `|| true` in the command tolerates it), but a hard failure here is
+        // the #1 cause of a silent 0-notes run (`fbx-agent step` → `command not found` at invoke), so
+        // log any install command that reports an error instead of swallowing it entirely.
         for cmd in runtime.install_spec().install_cmds {
-            let _ = self
+            match self
                 .client
                 .exec(&handle.name, &cmd, Some("/"), &[], 300)
-                .await;
+                .await
+            {
+                Ok(out)
+                    if out.stderr.contains("npm ERR")
+                        || out.stderr.contains("command not found") =>
+                {
+                    tracing::warn!(
+                        sprite = %handle.name,
+                        "runtime install command reported an error (agent may be missing at invoke): {} — stderr: {}",
+                        cmd,
+                        out.stderr.trim(),
+                    );
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::warn!(sprite = %handle.name, "runtime install command failed to run: {cmd} ({e:?})");
+                }
+            }
         }
         let mcp = runtime.mcp_config(&brief.taste_url(), &brief.vault_url());
         let prelaunch = runtime.prelaunch_files(brief);
@@ -440,8 +461,34 @@ impl SpriteBackend {
             .map(|o| o.stdout.trim().to_string());
 
         // The agent's own end-of-loop summary, parsed from the transcript (Claude Code emits a
-        // delimited block; other runtimes return None).
+        // delimited block; other runtimes return None). fbx-agent also emits a `cost` block (its
+        // per-run optimizer cost/savings) — parse both before `run.stdout` moves into `transcript`.
         let summary = runtime.parse_summary(&run.stdout);
+        let cost = runtime.parse_cost(&run.stdout);
+
+        // The agent binary never actually ran: the invoke shelled out (e.g. `fbx-agent step …`) but
+        // the runtime wasn't installed, so the transcript is a shell `command not found`. Left
+        // unflagged this returns a "completed" run with an empty diff — the exact silent 0-notes
+        // failure. Surface it as a hard error (loud in `tracing`, and a non-"completed" status the
+        // ingest/engine caller can react to) instead of a green success.
+        let agent_missing = run.stdout.contains("command not found");
+        if agent_missing {
+            let tail: String = run
+                .stdout
+                .trim_end()
+                .chars()
+                .rev()
+                .take(400)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            tracing::warn!(
+                sprite = %handle.name,
+                "coding agent binary was not found at invoke — the runtime install likely failed; \
+                 the run produced no changes. transcript tail: {tail}",
+            );
+        }
 
         Ok(ExecResult {
             files_changed: files
@@ -454,7 +501,12 @@ impl SpriteBackend {
             summary,
             test_summary: None,
             head_sha,
-            status: "completed".into(),
+            status: if agent_missing {
+                "agent_not_found".into()
+            } else {
+                "completed".into()
+            },
+            cost,
         })
     }
 }
