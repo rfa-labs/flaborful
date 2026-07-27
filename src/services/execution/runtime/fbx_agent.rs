@@ -78,8 +78,17 @@ impl AgentRuntime for FbxAgentRuntime {
     fn invoke_command(&self, _repo_dir: &str, _brief: &TaskBrief) -> String {
         // Run from the repo dir so the agent's file/command tools operate on the checkout; the
         // `2>&1` lets the transcript stream into the node log via `exec_streaming`.
+        //
+        // Resolve the binary robustly instead of a bare `fbx-agent`. `npm install -g` on a Sprite
+        // creates the `fbx-agent` symlink under an nvm-managed node's global bin
+        // (`$(npm prefix -g)/bin`), which is NOT on the sprite's default non-login PATH (verified on a
+        // live sprite) — so a bare `fbx-agent` yields `command not found` even though the install
+        // succeeded. `command -v` is the fast-path (works if a future base image puts it on PATH);
+        // otherwise fall back to the npm global-bin absolute path where the symlink actually lives.
+        // (Claude Code sidesteps this only because it installs into `~/.local/bin`, which IS on PATH.)
         format!(
-            "cd {repo} && fbx-agent step --config {cfg} 2>&1",
+            "cd {repo} && FBX_BIN=\"$(command -v fbx-agent || echo \"$(npm prefix -g)/bin/fbx-agent\")\" \
+             && \"$FBX_BIN\" step --config {cfg} 2>&1",
             repo = crate::services::execution::sprite::REPO_DIR_PUB,
             cfg = CONFIG_PATH,
         )
