@@ -115,6 +115,38 @@ mod extract_json_tests {
         assert!(!routes_to_optimizer(false, true));
     }
 
+    #[test]
+    fn chat_request_omits_temperature_on_optimizer_path() {
+        use super::{ChatMessage, ChatRequest};
+        let msgs = vec![ChatMessage {
+            role: "user".into(),
+            content: "hi".into(),
+        }];
+        // Optimizer-routed: model omitted AND temperature omitted (reasoning models 400 on a
+        // non-default temperature — this is the fix for the repeating gpt-5.5 temperature-400s).
+        let routed = ChatRequest {
+            model: None,
+            messages: msgs.clone(),
+            temperature: None,
+            response_format: None,
+        };
+        let v = serde_json::to_value(&routed).unwrap();
+        assert!(v.get("temperature").is_none(), "temperature must be omitted when routed");
+        assert!(v.get("model").is_none(), "model omitted when routed");
+
+        // Direct-to-Ollama: temperature IS sent (legacy chat models accept it).
+        let direct = ChatRequest {
+            model: Some("qwen2.5-coder:7b".into()),
+            messages: msgs,
+            temperature: Some(0.3),
+            response_format: None,
+        };
+        let v = serde_json::to_value(&direct).unwrap();
+        let temp = v["temperature"].as_f64().expect("temperature present + numeric");
+        assert!((temp - 0.3).abs() < 1e-6, "temperature ~0.3 when direct, got {temp}");
+        assert_eq!(v["model"], "qwen2.5-coder:7b");
+    }
+
     // Serial (one test) because it mutates process-global env the optimizer route reads.
     #[test]
     fn optimizer_route_requires_both_url_and_key() {
@@ -209,7 +241,13 @@ struct ChatRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     model: Option<String>,
     messages: Vec<ChatMessage>,
-    temperature: f32,
+    /// Omitted on the optimizer-routed path: the edge routes unpinned traffic to reasoning models
+    /// (gpt-5.*), which 400 on ANY non-default temperature. Sending a hardcoded 0.2 there is what
+    /// produced the repeating `temperature does not support 0.2` failures + wasteful cross-vendor
+    /// fallback. When routed, we omit it (the model uses its default); direct-to-Ollama we still send
+    /// the caller's value (legacy chat models accept it).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     response_format: Option<ResponseFormat>,
 }
@@ -488,10 +526,18 @@ impl InferenceClient {
             ),
         };
 
+        // Omit `temperature` on the optimizer-routed path (unpinned → routed to reasoning models that
+        // 400 on any non-default temperature); send the caller's value only direct-to-Ollama.
+        let wire_temperature = if route.is_some() {
+            None
+        } else {
+            Some(temperature)
+        };
+
         let req_body = ChatRequest {
             model: req_model,
             messages,
-            temperature,
+            temperature: wire_temperature,
             response_format,
         };
 
