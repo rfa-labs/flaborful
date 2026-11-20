@@ -22,7 +22,11 @@
             "kind": {
               "Enum": [
                 "github",
-                "google"
+                "google",
+                "notion",
+                "slack",
+                "linear",
+                "jira"
               ]
             }
           }
@@ -73,7 +77,11 @@
             "kind": {
               "Enum": [
                 "github",
-                "google"
+                "google",
+                "notion",
+                "slack",
+                "linear",
+                "jira"
               ]
             }
           }

@@ -22,6 +22,17 @@
   let loading = true;
   let error = '';
   let nodeFeed: EventSource | null = null;
+
+  // Evaluation grade for this task (present once delivered + the agent has criteria).
+  interface CriterionResult { name: string; passed: boolean; priority: string; reasoning: string }
+  interface Evaluation { grade: string; criteria_results: CriterionResult[]; tags: string[]; summary: string | null }
+  let evaluation: Evaluation | null = null;
+  async function loadEvaluation() {
+    try {
+      evaluation = await api.get<Evaluation | null>(`/evaluations/task/${taskId}`);
+    } catch { evaluation = null; }
+  }
+  const GRADE_BADGE: Record<string, string> = { pass: 'badge-green', warning: 'badge-yellow', critical: 'badge-red' };
   let pollTimer: ReturnType<typeof setInterval> | null = null;
 
   // Node type registry — same palette as the workflow editor, plus a canvas-kind helper.
@@ -96,6 +107,7 @@
         edges = wf.graph.edges ?? [];
       }
       await loadExecutions();
+      if (isTerminal(task.status)) await loadEvaluation();
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to load execution';
     } finally {
@@ -120,7 +132,10 @@
   // Refresh the execution map + task. Tolerant of transient failures (kept polling).
   function refreshAll() {
     loadExecutions().catch(() => {});
-    api.get<Task>(`/tasks/${taskId}`).then(t => { task = t; }).catch(() => {});
+    api.get<Task>(`/tasks/${taskId}`).then(t => {
+      task = t;
+      if (isTerminal(t.status) && !evaluation) loadEvaluation();
+    }).catch(() => {});
   }
 
   function isTerminal(status: string | undefined): boolean {
@@ -293,6 +308,15 @@
     {#if task}
       <span class="text-sm font-semibold">Task {task.id.slice(0, 8)}</span>
       <span class="badge-{task.status === 'delivered' ? 'green' : task.status === 'failed' ? 'red' : task.status === 'awaiting_review' ? 'yellow' : 'blue'} text-xs capitalize">{task.status.replace(/_/g, ' ')}</span>
+      {#if evaluation}
+        <span class="{GRADE_BADGE[evaluation.grade] ?? 'badge-gray'} text-xs capitalize"
+          title={evaluation.summary ?? ''}>
+          Eval: {evaluation.grade}
+          {#if evaluation.criteria_results?.length}
+            ({evaluation.criteria_results.filter(c => c.passed).length}/{evaluation.criteria_results.length})
+          {/if}
+        </span>
+      {/if}
     {/if}
     <div class="flex-1"></div>
     <!-- Legend -->
@@ -325,26 +349,43 @@
             {/if}
           </div>
 
-          <!-- Side-effect gate: a rerun reached an already-completed write node -->
+          <!-- Side-effect gate. Two flavors:
+               • First-run policy gate (prior_output is null): the agent is ABOUT to act and your
+                 tool-approval policy asked for a check → Approve / Skip.
+               • Rerun gate (prior_output present): the node already wrote → reuse / update / refire. -->
           {#if gateExec?.pending_effect}
+            {@const isFirstRun = gateExec.pending_effect.prior_output == null}
             <div class="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs space-y-2">
-              <div class="font-semibold text-amber-800">This stage already did an external action ({gateExec.pending_effect.effect_kind.replace(/_/g, ' ')}).</div>
-              <p class="text-amber-700">Re-running could duplicate it. How should we handle it?</p>
-              <div class="flex flex-col gap-1.5">
-                <button class="btn-secondary text-xs" disabled={deciding} on:click={() => resolveEffect('reuse')}>
-                  Reuse — keep the existing one, don't redo it
-                </button>
-                {#if gateExec.pending_effect.supports_update}
-                  <button class="btn-primary text-xs" disabled={deciding} on:click={() => resolveEffect('update')}>
-                    Update — edit the existing one with the new content
+              {#if isFirstRun}
+                <div class="font-semibold text-amber-800">Your agent wants to take an external action ({gateExec.pending_effect.effect_kind.replace(/_/g, ' ')}).</div>
+                <p class="text-amber-700">Your approval policy asks you to OK this before it happens.</p>
+                <div class="flex flex-col gap-1.5">
+                  <button class="btn-primary text-xs" disabled={deciding} on:click={() => resolveEffect('refire')}>
+                    Approve — go ahead and do it
                   </button>
+                  <button class="btn-secondary text-xs" disabled={deciding} on:click={() => resolveEffect('reuse')}>
+                    Skip — don't do this action
+                  </button>
+                </div>
+              {:else}
+                <div class="font-semibold text-amber-800">This stage already did an external action ({gateExec.pending_effect.effect_kind.replace(/_/g, ' ')}).</div>
+                <p class="text-amber-700">Re-running could duplicate it. How should we handle it?</p>
+                <div class="flex flex-col gap-1.5">
+                  <button class="btn-secondary text-xs" disabled={deciding} on:click={() => resolveEffect('reuse')}>
+                    Reuse — keep the existing one, don't redo it
+                  </button>
+                  {#if gateExec.pending_effect.supports_update}
+                    <button class="btn-primary text-xs" disabled={deciding} on:click={() => resolveEffect('update')}>
+                      Update — edit the existing one with the new content
+                    </button>
+                  {/if}
+                  <button class="btn-danger text-xs" disabled={deciding} on:click={() => resolveEffect('refire')}>
+                    Post fresh — create a new one
+                  </button>
+                </div>
+                {#if !gateExec.pending_effect.supports_update}
+                  <p class="text-[11px] text-amber-600">(This action type can't be edited in place — only reuse or post fresh.)</p>
                 {/if}
-                <button class="btn-danger text-xs" disabled={deciding} on:click={() => resolveEffect('refire')}>
-                  Post fresh — create a new one
-                </button>
-              </div>
-              {#if !gateExec.pending_effect.supports_update}
-                <p class="text-[11px] text-amber-600">(This action type can't be edited in place — only reuse or post fresh.)</p>
               {/if}
             </div>
           {/if}

@@ -10,6 +10,12 @@ use uuid::Uuid;
 pub enum ConnectionProvider {
     Github,
     Google,
+    // Non-code likeness sources (Phase 3). OAuth flows are added per provider; Google Drive/Docs is
+    // the first ingestion source implemented on this. See [[Flaborful Likeness Ingestion Sources]].
+    Notion,
+    Slack,
+    Linear,
+    Jira,
 }
 
 impl ConnectionProvider {
@@ -17,7 +23,24 @@ impl ConnectionProvider {
         match self {
             ConnectionProvider::Github => "github",
             ConnectionProvider::Google => "google",
+            ConnectionProvider::Notion => "notion",
+            ConnectionProvider::Slack => "slack",
+            ConnectionProvider::Linear => "linear",
+            ConnectionProvider::Jira => "jira",
         }
+    }
+
+    /// Parse a provider slug (from a route path). Returns None for unknown.
+    pub fn from_str(s: &str) -> Option<Self> {
+        Some(match s {
+            "github" => ConnectionProvider::Github,
+            "google" => ConnectionProvider::Google,
+            "notion" => ConnectionProvider::Notion,
+            "slack" => ConnectionProvider::Slack,
+            "linear" => ConnectionProvider::Linear,
+            "jira" => ConnectionProvider::Jira,
+            _ => return None,
+        })
     }
 }
 

@@ -12,13 +12,17 @@ use anyhow::{anyhow, Result};
 use sqlx::PgPool;
 
 use super::runtime::{
-    claude_code::ClaudeCodeRuntime, codex::CodexRuntime, custom::CustomRuntime, AgentRuntime,
+    claude_code::ClaudeCodeRuntime, codex::CodexRuntime, custom::CustomRuntime,
+    fbx_agent::FbxAgentRuntime, AgentRuntime,
 };
 use super::sprite_client::{ExecOutput, SpriteClient, SpriteHandle};
 use super::sprite_env::{self, SpriteProvisioning};
 use super::{AgentRuntimeKind, ExecResult, ExecutionBackend, TaskBrief, TranscriptSink};
 
 const REPO_DIR: &str = "/workspace/repo";
+/// The repo checkout path, exposed for runtime adapters that need to reference it (e.g. fbx-agent
+/// writes it into its step config so its file/command tools operate on the checkout).
+pub(crate) const REPO_DIR_PUB: &str = REPO_DIR;
 
 pub struct SpriteBackend {
     db: PgPool,
@@ -49,6 +53,7 @@ impl SpriteBackend {
             AgentRuntimeKind::Custom => Box::new(CustomRuntime::new(
                 runtime_spec.unwrap_or(serde_json::Value::Null),
             )),
+            AgentRuntimeKind::FbxAgent => Box::new(FbxAgentRuntime),
         }
     }
 
@@ -64,35 +69,75 @@ impl SpriteBackend {
         // apply to every command). Setup/egress are applied only on a fresh sprite below.
         let provisioning = sprite_env::for_job(&self.db, brief.job_id).await;
 
-        // Existing row? Resume if the sprite still exists.
-        let row = sqlx::query!(
-            "SELECT sprite_name, status FROM task_sprites WHERE task_id = $1",
-            brief.task_id
-        )
-        .fetch_optional(&self.db)
-        .await?;
+        // Ingestion runs are EPHEMERAL: a throwaway sprite per repo with a synthetic task_id that
+        // has NO `tasks` row, so we must NOT touch `task_sprites` (its task_id FK references
+        // tasks(id) — inserting would violate the constraint). Ingestion also never resumes and
+        // never runs follow-up Sprite-only nodes, so the persisted row would serve no purpose. The
+        // sprite is created fresh here and destroyed by run_implementation when the run finishes.
+        let ephemeral = matches!(brief.kind, super::TaskKind::Ingest);
 
-        if let Some(r) = row {
-            if let Some(name) = r.sprite_name {
-                if r.status != "destroyed" && r.status != "gone" {
-                    if let Ok(h) = self.client.get(&name).await {
-                        return Ok((h, provisioning));
+        if !ephemeral {
+            // Existing row? Resume if the sprite still exists.
+            let row = sqlx::query!(
+                "SELECT sprite_name, status FROM task_sprites WHERE task_id = $1",
+                brief.task_id
+            )
+            .fetch_optional(&self.db)
+            .await?;
+
+            if let Some(r) = row {
+                if let Some(name) = r.sprite_name {
+                    if r.status != "destroyed" && r.status != "gone" {
+                        if let Ok(h) = self.client.get(&name).await {
+                            return Ok((h, provisioning));
+                        }
+                        // Reaped — mark gone and recreate below.
+                        let _ = sqlx::query!(
+                            "UPDATE task_sprites SET status = 'gone' WHERE task_id = $1",
+                            brief.task_id
+                        )
+                        .execute(&self.db)
+                        .await;
                     }
-                    // Reaped — mark gone and recreate below.
-                    let _ = sqlx::query!(
-                        "UPDATE task_sprites SET status = 'gone' WHERE task_id = $1",
-                        brief.task_id
-                    )
-                    .execute(&self.db)
-                    .await;
                 }
             }
         }
 
         let name = format!("flaborful-{}", &brief.task_id.simple().to_string()[..16]);
         sink.push(&format!("[sprite] creating {}\n", name)).await;
-        let handle = self.client.create(&name).await?;
+        // A create can report failure yet still leave a live sprite behind: with
+        // `wait_for_capacity`, the Sprites API provisions the VM and only then errors (a late 500, a
+        // timed-out long-poll, or an undeserializable success body). The VM exists but we never got
+        // a handle, so nothing reaps it — that's how "create failed" and orphaned cold sprites are
+        // both true. Since the name is deterministic (derived from task_id, identical to what create
+        // attempted), reap by that name on failure to kill any sprite that came up despite the
+        // error, then propagate the original failure.
+        let handle = match self.client.create(&name).await {
+            Ok(h) => h,
+            Err(e) => {
+                sink.push("[sprite] create failed — reaping any orphaned sprite\n")
+                    .await;
+                destroy_sprite_hard(&self.client, &name).await;
+                return Err(e);
+            }
+        };
 
+        // From here on the sprite EXISTS. For ephemeral runs, any failure below must destroy it or
+        // it leaks (no task_sprites row means external teardown can't find it). Provision in a
+        // helper and clean up on error before propagating. Ephemeral runs skip the task_sprites
+        // row entirely (their synthetic task_id has no `tasks` row to reference).
+        if ephemeral {
+            if let Err(e) = self
+                .provision_sprite(brief, sink, &handle, &provisioning)
+                .await
+            {
+                destroy_sprite_hard(&self.client, &handle.name).await;
+                return Err(e);
+            }
+            return Ok((handle, provisioning));
+        }
+
+        // Persist the sprite for real tasks (resume + follow-up nodes + teardown).
         sqlx::query!(
             r#"INSERT INTO task_sprites (task_id, sprite_name, sprite_url, status, repo, branch, test_env_strategy)
                VALUES ($1, $2, $3, 'running', $4, $5, $6)
@@ -109,6 +154,25 @@ impl SpriteBackend {
         )
         .execute(&self.db)
         .await?;
+
+        self.provision_sprite(brief, sink, &handle, &provisioning)
+            .await?;
+
+        Ok((handle, provisioning))
+    }
+
+    /// Provision a freshly-created sprite: egress allowlist, repo clone, and the test-env setup
+    /// commands. Shared by real-task and ephemeral (ingestion) runs. For real tasks it also records
+    /// the clone HEAD into `task_sprites` for rerun reconciliation; ephemeral runs skip that (no
+    /// row, never rerun).
+    async fn provision_sprite(
+        &self,
+        brief: &TaskBrief,
+        sink: &dyn TranscriptSink,
+        handle: &SpriteHandle,
+        provisioning: &SpriteProvisioning,
+    ) -> Result<()> {
+        let ephemeral = matches!(brief.kind, super::TaskKind::Ingest);
 
         // Apply the egress allowlist before anything reaches the network (egress strategy).
         // HARD RULE: never apply a network policy for a VPN (`network`) job — Fly's egress proxy
@@ -173,19 +237,22 @@ impl SpriteBackend {
                 return Err(anyhow!("git clone failed: {}", out.stderr));
             }
             sink.push("[sprite] repo cloned\n").await;
-            // Record the clone HEAD for rerun reconciliation.
-            if let Ok(sha) = self
-                .client
-                .exec(&handle.name, "git rev-parse HEAD", Some(REPO_DIR), &[], 30)
-                .await
-            {
-                let _ = sqlx::query!(
-                    "UPDATE task_sprites SET head_sha = $1 WHERE task_id = $2",
-                    sha.stdout.trim(),
-                    brief.task_id
-                )
-                .execute(&self.db)
-                .await;
+            // Record the clone HEAD for rerun reconciliation (real tasks only — ephemeral ingestion
+            // runs have no task_sprites row and never rerun).
+            if !ephemeral {
+                if let Ok(sha) = self
+                    .client
+                    .exec(&handle.name, "git rev-parse HEAD", Some(REPO_DIR), &[], 30)
+                    .await
+                {
+                    let _ = sqlx::query!(
+                        "UPDATE task_sprites SET head_sha = $1 WHERE task_id = $2",
+                        sha.stdout.trim(),
+                        brief.task_id
+                    )
+                    .execute(&self.db)
+                    .await;
+                }
             }
         }
 
@@ -205,7 +272,7 @@ impl SpriteBackend {
             }
         }
 
-        Ok((handle, provisioning))
+        Ok(())
     }
 }
 
@@ -232,37 +299,90 @@ impl ExecutionBackend for SpriteBackend {
         )
         .fetch_optional(&self.db)
         .await?;
-        let runtime_kind = agent_row
-            .as_ref()
-            .and_then(|r| match r.agent_runtime.as_str() {
-                "claude_code" => Some(AgentRuntimeKind::ClaudeCode),
-                "codex" => Some(AgentRuntimeKind::Codex),
-                "custom" => Some(AgentRuntimeKind::Custom),
-                _ => None,
-            })
-            .unwrap_or_default();
+        // A per-node execution-environment choice (on the brief) wins over the agent default, so a
+        // single workflow can mix environments node-to-node.
+        let runtime_kind = brief.runtime_override.unwrap_or_else(|| {
+            agent_row
+                .as_ref()
+                .and_then(|r| AgentRuntimeKind::from_str_opt(&r.agent_runtime))
+                .unwrap_or_default()
+        });
         let runtime_spec = agent_row.and_then(|r| r.runtime_spec);
         let runtime = Self::runtime_for(runtime_kind, runtime_spec);
 
         let (handle, provisioning) = self.ensure_sprite(brief, sink).await?;
 
-        // Install the runtime + write its MCP config pointing at the shared taste endpoint.
+        // Ephemeral (ingestion) sprites have no task_sprites row, so external teardown can't reach
+        // them — we own their whole lifecycle. Run the body, then destroy the sprite regardless of
+        // outcome. A "re-do from scratch" therefore always starts a brand-new sprite (nothing
+        // persists to resume), which is the correct semantics for ingestion.
+        let ephemeral = matches!(brief.kind, super::TaskKind::Ingest);
+        let result = self
+            .run_on_sprite(brief, sink, &handle, &provisioning, runtime.as_ref())
+            .await;
+        if ephemeral {
+            sink.push("[sprite] tearing down ephemeral sprite\n").await;
+            destroy_sprite_hard(&self.client, &handle.name).await;
+        }
+        result
+    }
+}
+
+impl SpriteBackend {
+    /// Drive the agent on an already-provisioned sprite: install the runtime, write its MCP config,
+    /// run it headless, and read back the diff/summary. Separated from `run_implementation` so the
+    /// caller can guarantee teardown of ephemeral sprites around this whole body.
+    async fn run_on_sprite(
+        &self,
+        brief: &TaskBrief,
+        sink: &dyn TranscriptSink,
+        handle: &SpriteHandle,
+        provisioning: &SpriteProvisioning,
+        runtime: &dyn AgentRuntime,
+    ) -> Result<ExecResult> {
+        // Install the runtime + write its MCP config pointing at the shared taste endpoint. Installs
+        // are best-effort (a transient npm hiccup shouldn't abort the whole run — the binary may
+        // already be present, or `|| true` in the command tolerates it), but a hard failure here is
+        // the #1 cause of a silent 0-notes run (`fbx-agent step` → `command not found` at invoke), so
+        // log any install command that reports an error instead of swallowing it entirely.
         for cmd in runtime.install_spec().install_cmds {
-            let _ = self
+            match self
                 .client
                 .exec(&handle.name, &cmd, Some("/"), &[], 300)
-                .await;
+                .await
+            {
+                Ok(out)
+                    if out.stderr.contains("npm ERR")
+                        || out.stderr.contains("command not found") =>
+                {
+                    tracing::warn!(
+                        sprite = %handle.name,
+                        "runtime install command reported an error (agent may be missing at invoke): {} — stderr: {}",
+                        cmd,
+                        out.stderr.trim(),
+                    );
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::warn!(sprite = %handle.name, "runtime install command failed to run: {cmd} ({e:?})");
+                }
+            }
         }
         let mcp = runtime.mcp_config(&brief.taste_url(), &brief.vault_url());
-        let write_cfg = format!(
-            "mkdir -p $(dirname {p}) && cat > {p} <<'FLABEOF'\n{c}\nFLABEOF",
-            p = mcp.path,
-            c = mcp.contents
-        );
-        let _ = self
-            .client
-            .exec(&handle.name, &write_cfg, Some("/"), &[], 60)
-            .await;
+        let prelaunch = runtime.prelaunch_files(brief);
+        // The MCP config plus any runtime prelaunch files (e.g. fbx-agent's step config). All are
+        // written the same way: mkdir the parent, then a quoted heredoc so contents survive intact.
+        for f in std::iter::once(&mcp).chain(prelaunch.iter()) {
+            let write_cfg = format!(
+                "mkdir -p $(dirname {p}) && cat > {p} <<'FLABEOF'\n{c}\nFLABEOF",
+                p = f.path,
+                c = f.contents
+            );
+            let _ = self
+                .client
+                .exec(&handle.name, &write_cfg, Some("/"), &[], 60)
+                .await;
+        }
 
         // The MCP config is platform infrastructure (contains our taste endpoint + per-task token).
         // It lives inside the repo so the agent runtime can read it, but it must NOT end up in the
@@ -282,9 +402,15 @@ impl ExecutionBackend for SpriteBackend {
                 .await;
         }
 
-        // Drive the agent headless. ANTHROPIC_API_KEY is needed for the coding model; pass it
-        // through from the backend env, alongside the company's test-env env (cloud creds, etc.).
-        let anthropic_key = std::env::var("ANTHROPIC_API_KEY").unwrap_or_default();
+        // Drive the agent headless. ANTHROPIC_API_KEY is needed for the coding model. Prefer the
+        // professional's own key; fall back to the server key (the premium "run on ours" path).
+        // Injected alongside the company's test-env env (cloud creds, etc.).
+        let anthropic_key = brief
+            .anthropic_api_key
+            .as_deref()
+            .filter(|k| !k.trim().is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| std::env::var("ANTHROPIC_API_KEY").unwrap_or_default());
         let mut env = vec![("ANTHROPIC_API_KEY".to_string(), anthropic_key)];
         env.extend(provisioning.env.iter().cloned());
         let cmd = runtime.invoke_command(REPO_DIR, brief);
@@ -335,8 +461,34 @@ impl ExecutionBackend for SpriteBackend {
             .map(|o| o.stdout.trim().to_string());
 
         // The agent's own end-of-loop summary, parsed from the transcript (Claude Code emits a
-        // delimited block; other runtimes return None).
+        // delimited block; other runtimes return None). fbx-agent also emits a `cost` block (its
+        // per-run optimizer cost/savings) — parse both before `run.stdout` moves into `transcript`.
         let summary = runtime.parse_summary(&run.stdout);
+        let cost = runtime.parse_cost(&run.stdout);
+
+        // The agent binary never actually ran: the invoke shelled out (e.g. `fbx-agent step …`) but
+        // the runtime wasn't installed, so the transcript is a shell `command not found`. Left
+        // unflagged this returns a "completed" run with an empty diff — the exact silent 0-notes
+        // failure. Surface it as a hard error (loud in `tracing`, and a non-"completed" status the
+        // ingest/engine caller can react to) instead of a green success.
+        let agent_missing = run.stdout.contains("command not found");
+        if agent_missing {
+            let tail: String = run
+                .stdout
+                .trim_end()
+                .chars()
+                .rev()
+                .take(400)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            tracing::warn!(
+                sprite = %handle.name,
+                "coding agent binary was not found at invoke — the runtime install likely failed; \
+                 the run produced no changes. transcript tail: {tail}",
+            );
+        }
 
         Ok(ExecResult {
             files_changed: files
@@ -349,7 +501,12 @@ impl ExecutionBackend for SpriteBackend {
             summary,
             test_summary: None,
             head_sha,
-            status: "completed".into(),
+            status: if agent_missing {
+                "agent_not_found".into()
+            } else {
+                "completed".into()
+            },
+            cost,
         })
     }
 }
@@ -395,6 +552,35 @@ pub async fn destroy_job_sprites(db: &PgPool, client: &SpriteClient, job_id: uui
     }
 }
 
+/// Destroy a sprite with bounded retries, and LOUDLY log if it ultimately fails.
+///
+/// A single `DELETE /sprites/{name}` is flaky — the Sprites API 500s/times out under load — and a
+/// swallowed failure permanently leaks the VM (it keeps running and billing, and there is no
+/// task_sprites row for ephemeral ingestion sprites, so nothing ever reaps it). We retry a few
+/// times with backoff; if every attempt fails we emit an error naming the sprite so an operator can
+/// delete it manually and knows a leak occurred (a `let _ = destroy()` hid both facts).
+async fn destroy_sprite_hard(client: &SpriteClient, name: &str) {
+    const ATTEMPTS: usize = 4;
+    for attempt in 1..=ATTEMPTS {
+        match client.destroy(name).await {
+            Ok(()) => return,
+            Err(e) => {
+                if attempt == ATTEMPTS {
+                    tracing::error!(
+                        "LEAKED SPRITE: failed to destroy {name} after {ATTEMPTS} attempts \
+                         ({e:?}) — it is still running and must be deleted manually"
+                    );
+                } else {
+                    tracing::warn!(
+                        "destroy {name} attempt {attempt}/{ATTEMPTS} failed ({e:?}); retrying"
+                    );
+                    tokio::time::sleep(std::time::Duration::from_secs(2 * attempt as u64)).await;
+                }
+            }
+        }
+    }
+}
+
 /// Destroy a task's sprite (best-effort), called on task terminal + job complete/kill.
 pub async fn destroy_task_sprite(db: &PgPool, client: &SpriteClient, task_id: uuid::Uuid) {
     if let Ok(Some(row)) = sqlx::query!(
@@ -405,7 +591,7 @@ pub async fn destroy_task_sprite(db: &PgPool, client: &SpriteClient, task_id: uu
     .await
     {
         if let Some(name) = row.sprite_name {
-            let _ = client.destroy(&name).await;
+            destroy_sprite_hard(client, &name).await;
         }
         let _ = sqlx::query!(
             "UPDATE task_sprites SET status = 'destroyed', destroyed_at = NOW() WHERE task_id = $1",

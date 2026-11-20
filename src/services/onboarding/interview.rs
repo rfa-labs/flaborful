@@ -109,16 +109,13 @@ Make scenarios specific and realistic — not textbook examples.{extra}"#,
         // set so onboarding proceeds immediately. The richer personalization signal comes from the
         // vault + open-form interview anyway, so a fast canned fallback is the right tradeoff.
         const GEN_BUDGET: std::time::Duration = std::time::Duration::from_secs(15);
-        let gen = tokio::time::timeout(
-            GEN_BUDGET,
-            self.inference.orchestrate(&system, &user, true),
-        )
-        .await
-        .unwrap_or_else(|_| Err(anyhow::anyhow!("scenario generation timed out")));
+        let gen =
+            tokio::time::timeout(GEN_BUDGET, self.inference.orchestrate(&system, &user, true))
+                .await
+                .unwrap_or_else(|_| Err(anyhow::anyhow!("scenario generation timed out")));
 
-        let raw_scenarios: Vec<RawScenario> = match gen
-            .map_err(|e| anyhow::anyhow!("{e}"))
-            .and_then(|raw| {
+        let raw_scenarios: Vec<RawScenario> =
+            match gen.map_err(|e| anyhow::anyhow!("{e}")).and_then(|raw| {
                 let json_str = crate::services::inference::strip_fences(&raw);
                 serde_json::from_str::<Vec<RawScenario>>(json_str)
                     .or_else(|_| {
@@ -132,17 +129,20 @@ Make scenarios specific and realistic — not textbook examples.{extra}"#,
                     })
                     .map_err(|e| anyhow::anyhow!("{e}"))
             }) {
-            Ok(s) if !s.is_empty() => s,
-            Ok(_) | Err(_) => {
-                tracing::warn!(
+                Ok(s) if !s.is_empty() => s,
+                Ok(_) | Err(_) => {
+                    tracing::warn!(
                     "scenario generation failed for {profession}/{aspect:?} — using canned fallback"
                 );
-                fallback_scenarios(count)
-                    .into_iter()
-                    .map(|(description, options)| RawScenario { description, options })
-                    .collect()
-            }
-        };
+                    fallback_scenarios(count)
+                        .into_iter()
+                        .map(|(description, options)| RawScenario {
+                            description,
+                            options,
+                        })
+                        .collect()
+                }
+            };
 
         Ok(raw_scenarios
             .into_iter()

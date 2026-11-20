@@ -23,7 +23,26 @@ pub struct ExecutionContext {
     /// Owner decisions for side-effecting nodes on a rerun: node_id → reuse|update|refire.
     /// Consumed by the gate so a node with a decision doesn't pause again.
     pub effect_decisions: HashMap<String, String>,
+    /// Subflow nesting depth (0 = top-level task graph). Bounded to prevent runaway/cyclic
+    /// subflow recursion. A Subflow node increments this for its child context.
+    pub subflow_depth: u32,
+    /// Whether per-node executions are persisted to `node_executions`. True at the top level (the
+    /// DAG inspector needs them). False inside a subflow's child run: the subflow is an internal
+    /// computation captured on the parent Subflow node's own execution row, and skipping child
+    /// persistence keeps the executions view clean AND sidesteps the `MAX(attempt)+1` INSERT race
+    /// that concurrent loop-mode iterations of the same child graph would otherwise hit. Drilling
+    /// into child executions is a Phase-6 (run-log) concern.
+    pub persist: bool,
+    /// The **workflow-level** execution environment (managed cloud / Claude Code BYOK / optimizer
+    /// fbx-agent). Set once for the whole run so every sprite node uses the SAME backend + coding
+    /// agent — fbx-agent's session spans the DAG without a foreign runtime stomping the tree.
+    /// `None` => the platform default (optimizer fbx-agent). Inherited by subflow child contexts.
+    pub execution_environment: Option<crate::services::execution::ExecutionEnvironment>,
 }
+
+/// Max subflow nesting depth. Beyond this a Subflow node errors rather than recursing further —
+/// guards against a workflow that (directly or transitively) includes itself.
+const MAX_SUBFLOW_DEPTH: u32 = 8;
 
 impl ExecutionContext {
     pub fn new(
@@ -33,6 +52,7 @@ impl ExecutionContext {
         lora_name: Option<String>,
         persona_prompt: String,
         initial_input: Value,
+        execution_environment: Option<crate::services::execution::ExecutionEnvironment>,
     ) -> Self {
         let mut vars = HashMap::new();
         vars.insert("input".to_string(), initial_input);
@@ -44,6 +64,9 @@ impl ExecutionContext {
             persona_prompt,
             vars,
             effect_decisions: HashMap::new(),
+            subflow_depth: 0,
+            persist: true,
+            execution_environment,
         }
     }
 }
@@ -75,6 +98,27 @@ fn is_sprite_mutating(t: &NodeType) -> bool {
             | NodeType::GitPush
             | NodeType::TestGate
     )
+}
+
+/// Load a task's workflow-level execution environment (from the workflow the task runs). Returns
+/// `None` when unset or the value doesn't parse (→ the platform default, optimizer fbx-agent).
+pub async fn load_task_execution_environment(
+    db: &PgPool,
+    task_id: Uuid,
+) -> Option<crate::services::execution::ExecutionEnvironment> {
+    let row = sqlx::query!(
+        r#"SELECT w.execution_environment
+           FROM tasks t JOIN workflows w ON w.id = t.workflow_id
+           WHERE t.id = $1"#,
+        task_id
+    )
+    .fetch_optional(db)
+    .await
+    .ok()
+    .flatten()?;
+    row.execution_environment
+        .as_deref()
+        .and_then(crate::services::execution::ExecutionEnvironment::from_str_opt)
 }
 
 fn build_adjacency(graph: &WorkflowGraph) -> HashMap<String, Vec<String>> {
@@ -259,7 +303,9 @@ impl<'a> WorkflowEngine<'a> {
                 continue;
             };
 
-            self.update_current_node(ctx.task_id, &node.id).await?;
+            if ctx.persist {
+                self.update_current_node(ctx.task_id, &node.id).await?;
+            }
 
             // ── Side-effect gate ──────────────────────────────────────────────
             // If this is a re-run of a side-effecting node (it already performed an
@@ -331,6 +377,32 @@ impl<'a> WorkflowEngine<'a> {
                             return Ok(());
                         }
                     }
+                } else if ctx.persist {
+                    // FIRST run of a side-effecting node (no prior output). Consult the agent's
+                    // tool-approval policy: if it requires approval for this effect kind and the
+                    // owner hasn't decided yet, pause BEFORE firing. `refire` = approve-and-fire,
+                    // `reuse`/`skip` = don't fire. (Subflow child runs — !persist — never gate.)
+                    if ctx.effect_decisions.get(&node.id).is_none() {
+                        let policy = crate::services::tool_policy::get(self.db, ctx.agent_id)
+                            .await
+                            .unwrap_or_default();
+                        if crate::services::tool_policy::requires_approval(&policy, effect_kind) {
+                            // No prior output on a first run — pass a null-output prior so the gate
+                            // offers approve (refire) / skip (reuse), not update-in-place.
+                            let prior = json!({ "output_json": Value::Null });
+                            self.pause_for_effect(ctx.task_id, &node.id, effect_kind, &prior)
+                                .await?;
+                            return Ok(());
+                        }
+                    } else if matches!(
+                        ctx.effect_decisions.get(&node.id).map(|s| s.as_str()),
+                        Some("reuse") | Some("skip")
+                    ) {
+                        // Owner rejected this write on the pre-fire gate → skip firing it.
+                        push_next(&mut stack, &adj, &node.id);
+                        continue;
+                    }
+                    // A `refire`/`update` decision (or no policy gate) falls through to execute.
                 }
             }
 
@@ -345,11 +417,15 @@ impl<'a> WorkflowEngine<'a> {
                     .await?;
             }
 
-            // Snapshot the input context this node sees, for the DAG inspector.
-            let input_snapshot = json!(ctx.vars);
-            let exec_id = self
-                .record_node_start(ctx.task_id, &node.id, node.node_type_str(), input_snapshot)
-                .await?;
+            // Snapshot the input context this node sees, for the DAG inspector. Subflow child runs
+            // don't persist (nil exec_id) — see ExecutionContext.persist.
+            let exec_id = if ctx.persist {
+                let input_snapshot = json!(ctx.vars);
+                self.record_node_start(ctx.task_id, &node.id, node.node_type_str(), input_snapshot)
+                    .await?
+            } else {
+                Uuid::nil()
+            };
 
             // Capture the pre-node filesystem checkpoint so a future rerun of this node can
             // restore exactly this state. Best-effort: degrades to git-reset if unsupported.
@@ -370,8 +446,12 @@ impl<'a> WorkflowEngine<'a> {
                         Some(&e.to_string()),
                     )
                     .await?;
-                    self.fail_task(ctx.task_id, &node.id, &e.to_string())
-                        .await?;
+                    // In a subflow child run, propagate the error up to the Subflow node rather than
+                    // failing the whole task here — the parent decides (error_shield in loop mode).
+                    if ctx.persist {
+                        self.fail_task(ctx.task_id, &node.id, &e.to_string())
+                            .await?;
+                    }
                     return Err(e);
                 }
             };
@@ -403,6 +483,14 @@ impl<'a> WorkflowEngine<'a> {
                     }
                 }
                 NodeResult::PauseForReview { draft } => {
+                    // A subflow can't pause the parent task for review — human gates belong in the
+                    // top-level graph. Reject rather than silently swallowing the gate.
+                    if !ctx.persist {
+                        return Err(anyhow!(
+                            "a subflow cannot contain a Human Gate (node '{}') — put gates in the top-level workflow",
+                            node.id
+                        ));
+                    }
                     self.record_node_finish(
                         exec_id,
                         node_status::AWAITING_REVIEW,
@@ -424,7 +512,14 @@ impl<'a> WorkflowEngine<'a> {
                         None,
                     )
                     .await?;
-                    self.deliver(ctx.task_id, &output).await?;
+                    // Inside a subflow, an Output node "delivers" back to the parent rather than to
+                    // the task: stash it so run_subflow_once can lift it out.
+                    if ctx.persist {
+                        self.deliver(ctx, &output).await?;
+                    } else {
+                        ctx.vars
+                            .insert("__subflow_out__output".to_string(), Value::String(output));
+                    }
                 }
             }
         }
@@ -445,6 +540,8 @@ impl<'a> WorkflowEngine<'a> {
         persona_prompt: String,
         initial_input: Value,
     ) -> Result<ExecutionContext> {
+        // Preserve the workflow-level execution environment across resume/rerun.
+        let execution_environment = load_task_execution_environment(db, task_id).await;
         let mut ctx = ExecutionContext::new(
             task_id,
             agent_id,
@@ -452,6 +549,7 @@ impl<'a> WorkflowEngine<'a> {
             lora_name,
             persona_prompt,
             initial_input,
+            execution_environment,
         );
 
         // Re-inject the task's work-target (repo, base_branch, …) into ctx.vars, exactly as the
@@ -526,6 +624,10 @@ impl<'a> WorkflowEngine<'a> {
         output_json: Option<&Value>,
         logs: Option<&str>,
     ) -> Result<()> {
+        // Nil id = a non-persisted node (a subflow child run); nothing to update.
+        if exec_id.is_nil() {
+            return Ok(());
+        }
         sqlx::query!(
             r#"UPDATE node_executions
                SET status = $1, output_key = $2, output_json = $3, logs = $4, finished_at = NOW()
@@ -872,6 +974,59 @@ impl<'a> WorkflowEngine<'a> {
 
             NodeType::Formatter => self.run_formatter(node, ctx).await,
 
+            // ── Data-driven registry nodes (see services/node_registry.rs) ──
+            NodeType::Filter => self.run_filter(node, ctx).await,
+            NodeType::Router => self.run_router(node, ctx).await,
+            NodeType::JoinPaths => self.run_join_paths(node, ctx).await,
+            NodeType::ErrorShield => self.run_error_shield(node, ctx).await,
+            NodeType::AskAi => self.run_ask_ai(node, ctx).await,
+            NodeType::BuildBlueprint => self.run_build_blueprint(node, ctx).await,
+            NodeType::ExtractData => self.run_extract_data(node, ctx).await,
+            NodeType::Categorizer => self.run_categorizer(node, ctx).await,
+            NodeType::Scorer => self.run_scorer(node, ctx).await,
+            NodeType::CombineText => self.run_combine_text(node, ctx).await,
+            NodeType::ReadJson => self.run_read_json(node, ctx).await,
+            NodeType::WriteJson => self.run_write_json(node, ctx).await,
+            NodeType::CallApi => self.run_call_api(node, ctx).await,
+            NodeType::McpServer => self.run_mcp_server(node, ctx).await,
+
+            // ── Composability ──
+            NodeType::Subflow => self.run_subflow(node, ctx).await,
+            // A SubflowInput seeds its named parameter into vars. At the top level (or if the
+            // parent didn't map it) it falls back to whatever is already in vars, so a subflow can
+            // still be run/tested standalone. Inside run_subflow the mapped inputs are pre-seeded.
+            NodeType::SubflowInput => {
+                let name = node
+                    .config
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("input");
+                let value = ctx.vars.get(name).cloned().unwrap_or(Value::Null);
+                Ok(NodeResult::Continue {
+                    output_key: name.to_string(),
+                    value,
+                })
+            }
+            // A SubflowOutput records its value under its name so run_subflow can lift it back into
+            // the parent. It is terminal within the child graph (no downstream), like Output.
+            NodeType::SubflowOutput => {
+                let name = node
+                    .config
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("output");
+                let value_var = node
+                    .config
+                    .get("value_var")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(name);
+                let value = ctx.vars.get(value_var).cloned().unwrap_or(Value::Null);
+                Ok(NodeResult::Continue {
+                    output_key: format!("__subflow_out__{name}"),
+                    value,
+                })
+            }
+
             NodeType::Output => {
                 let output_var = node
                     .config
@@ -973,7 +1128,7 @@ impl<'a> WorkflowEngine<'a> {
 
         let raw_output = self
             .inference
-            .worker(&system, &user_prompt, ctx.lora_name.as_deref())
+            .worker_likeness(&system, &user_prompt, ctx.lora_name.as_deref())
             .await?;
 
         // In document-author mode, strip any code fences so downstream gets clean JSON.
@@ -1092,6 +1247,1048 @@ impl<'a> WorkflowEngine<'a> {
             output_key,
             value: Value::String(formatted),
         })
+    }
+
+    // ── Data-driven registry node handlers ────────────────────────────────────
+    // These back the first batch of Gumloop-parity nodes described by node_registry.rs. They read
+    // their config by the same string keys the manifest declares. Helpers below keep them terse.
+
+    /// Read a config field that may be either a literal (`key`) or a variable reference (`key_var`),
+    /// resolving the variable against ctx.vars. Falls back to `default`.
+    fn cfg_or_var(node: &WorkflowNode, ctx: &ExecutionContext, key: &str, default: &str) -> String {
+        // Direct literal wins.
+        if let Some(s) = node.config.get(key).and_then(|v| v.as_str()) {
+            if !s.is_empty() {
+                // A literal that names a variable ({{var}} or an existing var) is resolved too.
+                return Self::interpolate(s, ctx);
+            }
+        }
+        // Else a `<key>_var` pointing at a ctx var.
+        if let Some(var) = node
+            .config
+            .get(format!("{key}_var"))
+            .and_then(|v| v.as_str())
+        {
+            if let Some(v) = ctx.vars.get(var) {
+                return v
+                    .as_str()
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| v.to_string());
+            }
+        }
+        default.to_string()
+    }
+
+    /// Resolve a value that is either a literal string or the name of a ctx var. Used where the
+    /// manifest exposes one field (dynamic input): if it matches a var name, use the var.
+    fn resolve_value(raw: &str, ctx: &ExecutionContext) -> Value {
+        if let Some(v) = ctx.vars.get(raw) {
+            return v.clone();
+        }
+        Value::String(Self::interpolate(raw, ctx))
+    }
+
+    /// {{var}} interpolation against ctx.vars (string-rendered).
+    fn interpolate(template: &str, ctx: &ExecutionContext) -> String {
+        let mut out = template.to_string();
+        for (k, v) in &ctx.vars {
+            let needle = format!("{{{{{k}}}}}");
+            if out.contains(&needle) {
+                let rendered = v
+                    .as_str()
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| v.to_string());
+                out = out.replace(&needle, &rendered);
+            }
+        }
+        out
+    }
+
+    fn output_key(node: &WorkflowNode, default: &str) -> String {
+        node.config
+            .get("output_var")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .unwrap_or(default)
+            .to_string()
+    }
+
+    /// Filter: pass the input through only when a condition holds (if-statement for data).
+    async fn run_filter(
+        &self,
+        node: &WorkflowNode,
+        ctx: &mut ExecutionContext,
+    ) -> Result<NodeResult> {
+        let filter_by = Self::cfg_or_var(node, ctx, "filter_by", "");
+        let condition = node
+            .config
+            .get("condition")
+            .and_then(|v| v.as_str())
+            .unwrap_or("is_not_empty");
+        let cmp = Self::cfg_or_var(node, ctx, "conditional_value", "");
+        let input_raw = node
+            .config
+            .get("input_var")
+            .and_then(|v| v.as_str())
+            .unwrap_or("input");
+        let input = Self::resolve_value(input_raw, ctx);
+
+        let passes = Self::eval_condition(&filter_by, condition, &cmp);
+        let output_key = Self::output_key(node, "filtered_output");
+        let output_blank = node
+            .config
+            .get("output_blank")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        let value = if passes {
+            input
+        } else if output_blank {
+            Value::String(String::new())
+        } else {
+            Value::Null
+        };
+        Ok(NodeResult::Continue { output_key, value })
+    }
+
+    /// Deterministic condition evaluation shared by Filter (and rule-mode Router).
+    fn eval_condition(lhs: &str, condition: &str, rhs: &str) -> bool {
+        let (ln, rn) = (lhs.trim().parse::<f64>(), rhs.trim().parse::<f64>());
+        match condition {
+            "greater_than" => matches!((ln, rn), (Ok(a), Ok(b)) if a > b),
+            "less_than" => matches!((ln, rn), (Ok(a), Ok(b)) if a < b),
+            "equals" => lhs == rhs,
+            "contains" => lhs.contains(rhs),
+            "is_in" => rhs.contains(lhs),
+            "starts_with" => lhs.starts_with(rhs),
+            "ends_with" => lhs.ends_with(rhs),
+            "is_empty" => lhs.trim().is_empty(),
+            "is_not_empty" => !lhs.trim().is_empty(),
+            "is_true" => matches!(
+                lhs.trim().to_ascii_lowercase().as_str(),
+                "true" | "yes" | "1"
+            ),
+            "is_false" => matches!(
+                lhs.trim().to_ascii_lowercase().as_str(),
+                "false" | "no" | "0" | ""
+            ),
+            _ => false,
+        }
+    }
+
+    /// Router: choose one of up to 8 routes by AI interpretation or deterministic rules. Emits the
+    /// chosen route name as a Branch so the engine's existing branch machinery routes downstream.
+    async fn run_router(
+        &self,
+        node: &WorkflowNode,
+        ctx: &mut ExecutionContext,
+    ) -> Result<NodeResult> {
+        let input_raw = node
+            .config
+            .get("input_var")
+            .and_then(|v| v.as_str())
+            .unwrap_or("input");
+        let input = Self::resolve_value(input_raw, ctx);
+        let input_str = input
+            .as_str()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| input.to_string());
+        let routes = node
+            .config
+            .get("routes")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        let route_with_ai = node
+            .config
+            .get("route_with_ai")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+
+        let names: Vec<String> = routes
+            .iter()
+            .filter_map(|r| r.get("name").and_then(|v| v.as_str()).map(String::from))
+            .collect();
+        if names.is_empty() {
+            return Ok(NodeResult::Branch("default".into()));
+        }
+
+        if !route_with_ai {
+            // Deterministic: first route whose condition holds against the input.
+            for r in &routes {
+                let name = r.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                let cond = r.get("condition").and_then(|v| v.as_str()).unwrap_or("");
+                // condition of the form "<op> <value>", else contains-match
+                if !cond.is_empty() && input_str.contains(cond) {
+                    return Ok(NodeResult::Branch(name.to_string()));
+                }
+            }
+            return Ok(NodeResult::Branch(names[0].clone()));
+        }
+
+        let conditions_desc = routes
+            .iter()
+            .map(|r| {
+                format!(
+                    "- {}: {}",
+                    r.get("name").and_then(|v| v.as_str()).unwrap_or(""),
+                    r.get("condition").and_then(|v| v.as_str()).unwrap_or("")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let system = "You route an input to exactly one named route. Return JSON {\"route\": \"<name>\"} choosing the single best-matching route name from the list.";
+        let user = format!("Input:\n{input_str}\n\nRoutes:\n{conditions_desc}");
+        let raw = self.inference.orchestrate(system, &user, true).await?;
+        let parsed: Value = serde_json::from_str(crate::services::inference::strip_fences(&raw))
+            .unwrap_or(Value::Null);
+        let chosen = parsed
+            .get("route")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        let route = chosen
+            .filter(|c| names.contains(c))
+            .unwrap_or_else(|| names[0].clone());
+        Ok(NodeResult::Branch(route))
+    }
+
+    /// Join Paths: re-merge branches — pass through whichever named branch variable actually ran
+    /// (i.e. the first that is present and non-null in ctx.vars).
+    async fn run_join_paths(
+        &self,
+        node: &WorkflowNode,
+        ctx: &mut ExecutionContext,
+    ) -> Result<NodeResult> {
+        let inputs = node
+            .config
+            .get("inputs")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let output_key = Self::output_key(node, "joined");
+        for name in inputs
+            .split(',')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+        {
+            if let Some(v) = ctx.vars.get(name) {
+                if !v.is_null() {
+                    return Ok(NodeResult::Continue {
+                        output_key,
+                        value: v.clone(),
+                    });
+                }
+            }
+        }
+        Ok(NodeResult::Continue {
+            output_key,
+            value: Value::Null,
+        })
+    }
+
+    /// Error Shield: run in a way that a failure of the wrapped input routes to an error output var
+    /// instead of failing the run. Here (pre-subflow-wrapping) it validates the input is present;
+    /// a null/missing input becomes the error path. Full node-wrapping arrives with Subflows.
+    async fn run_error_shield(
+        &self,
+        node: &WorkflowNode,
+        ctx: &mut ExecutionContext,
+    ) -> Result<NodeResult> {
+        let input_raw = node
+            .config
+            .get("input_var")
+            .and_then(|v| v.as_str())
+            .unwrap_or("input");
+        let input = ctx.vars.get(input_raw).cloned();
+        let success_var = node
+            .config
+            .get("success_var")
+            .and_then(|v| v.as_str())
+            .unwrap_or("shielded")
+            .to_string();
+        let error_var = node
+            .config
+            .get("error_var")
+            .and_then(|v| v.as_str())
+            .unwrap_or("shield_error")
+            .to_string();
+        let pass_through = node
+            .config
+            .get("pass_inputs_through")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        match input {
+            Some(v) if !v.is_null() => Ok(NodeResult::Continue {
+                output_key: success_var,
+                value: v,
+            }),
+            other => {
+                let err_val = if pass_through {
+                    other.unwrap_or(Value::Null)
+                } else {
+                    Value::String(format!("missing input '{input_raw}'"))
+                };
+                Ok(NodeResult::Continue {
+                    output_key: error_var,
+                    value: err_val,
+                })
+            }
+        }
+    }
+
+    /// Ask AI: prompt the model (the professional's trained model when a lora is set).
+    async fn run_ask_ai(
+        &self,
+        node: &WorkflowNode,
+        ctx: &mut ExecutionContext,
+    ) -> Result<NodeResult> {
+        let prompt_tmpl = node
+            .config
+            .get("prompt")
+            .and_then(|v| v.as_str())
+            .unwrap_or("{{input}}");
+        let prompt = Self::interpolate(prompt_tmpl, ctx);
+        let system =
+            "You are the professional's assistant. Answer the prompt directly and concisely.";
+        let response = self
+            .inference
+            .worker_likeness(system, &prompt, ctx.lora_name.as_deref())
+            .await?;
+        Ok(NodeResult::Continue {
+            output_key: Self::output_key(node, "ai_response"),
+            value: Value::String(response),
+        })
+    }
+
+    /// Build Blueprint: distill the professional's vault (+ the company repo overlay) into a
+    /// task-scoped brief in their voice, and emit it as a var for a downstream coding node. This is
+    /// the Execution Blueprint (`blueprint::build_blueprint`) surfaced as a composable node — the
+    /// one LoRA distill IS the "represent the professional" step. Writes the markdown to the output
+    /// var (default `blueprint`), which Agent: Implement will reuse instead of re-distilling.
+    async fn run_build_blueprint(
+        &self,
+        node: &WorkflowNode,
+        ctx: &mut ExecutionContext,
+    ) -> Result<NodeResult> {
+        // Task text: explicit config, else a var, else a default — same resolution as AgentImplement.
+        let task_text = node
+            .config
+            .get("task")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .or_else(|| {
+                let v = node
+                    .config
+                    .get("task_var")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("input");
+                ctx.vars.get(v).and_then(|x| {
+                    x.as_str().map(str::to_string).or_else(|| {
+                        x.get("description")
+                            .and_then(|d| d.as_str())
+                            .map(str::to_string)
+                    })
+                })
+            })
+            .unwrap_or_else(|| "Implement the requested change.".to_string());
+
+        // Repo (config, else ctx.vars["repo"]) scopes the company repo vault overlay.
+        let repo = node
+            .config
+            .get("repo")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .or_else(|| {
+                ctx.vars
+                    .get("repo")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+            });
+
+        let overlays = self.build_vault_overlays(ctx, repo.as_deref()).await;
+        let blueprint = crate::services::blueprint::build_blueprint(
+            self.db,
+            self.qdrant,
+            self.inference,
+            ctx.agent_id,
+            ctx.lora_name.as_deref(),
+            &ctx.persona_prompt,
+            &task_text,
+            &overlays,
+        )
+        .await?;
+
+        Ok(NodeResult::Continue {
+            output_key: Self::output_key(node, "blueprint"),
+            value: Value::String(blueprint),
+        })
+    }
+
+    /// Extract Data: pull a user-defined field schema out of text as structured JSON.
+    async fn run_extract_data(
+        &self,
+        node: &WorkflowNode,
+        ctx: &mut ExecutionContext,
+    ) -> Result<NodeResult> {
+        let text_raw = node
+            .config
+            .get("text")
+            .and_then(|v| v.as_str())
+            .unwrap_or("input");
+        let text = Self::resolve_value(text_raw, ctx);
+        let text_str = text
+            .as_str()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| text.to_string());
+        let fields = node
+            .config
+            .get("fields")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        let schema = fields
+            .iter()
+            .map(|f| {
+                format!(
+                    "- {} ({}): {}",
+                    f.get("name").and_then(|v| v.as_str()).unwrap_or("field"),
+                    f.get("type").and_then(|v| v.as_str()).unwrap_or("text"),
+                    f.get("description").and_then(|v| v.as_str()).unwrap_or("")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let as_list = node
+            .config
+            .get("extract_list")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let shape = if as_list {
+            "a JSON array of objects"
+        } else {
+            "a single JSON object"
+        };
+        let system = format!(
+            "You extract structured data from text. Return {shape} with exactly these fields:\n{schema}\nReturn only JSON."
+        );
+        let raw = self.inference.orchestrate(&system, &text_str, true).await?;
+        let value: Value = serde_json::from_str(crate::services::inference::strip_fences(&raw))
+            .unwrap_or(Value::Null);
+        Ok(NodeResult::Continue {
+            output_key: Self::output_key(node, "extracted"),
+            value,
+        })
+    }
+
+    /// Categorizer: classify input into one of the user's categories.
+    async fn run_categorizer(
+        &self,
+        node: &WorkflowNode,
+        ctx: &mut ExecutionContext,
+    ) -> Result<NodeResult> {
+        let input_raw = node
+            .config
+            .get("input_var")
+            .and_then(|v| v.as_str())
+            .unwrap_or("input");
+        let input = Self::resolve_value(input_raw, ctx);
+        let input_str = input
+            .as_str()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| input.to_string());
+        let cats = node
+            .config
+            .get("categories")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        let list = cats
+            .iter()
+            .map(|c| {
+                format!(
+                    "- {}: {}",
+                    c.get("name").and_then(|v| v.as_str()).unwrap_or(""),
+                    c.get("description").and_then(|v| v.as_str()).unwrap_or("")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let justify = node
+            .config
+            .get("include_justification")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let system = format!(
+            "You classify input into exactly one category. Return JSON {{\"category\": \"<name>\"{}}}.\nCategories:\n{list}",
+            if justify { ", \"justification\": \"<why>\"" } else { "" }
+        );
+        let raw = self
+            .inference
+            .orchestrate(&system, &input_str, true)
+            .await?;
+        let parsed: Value = serde_json::from_str(crate::services::inference::strip_fences(&raw))
+            .unwrap_or(Value::Null);
+        let category = parsed.get("category").cloned().unwrap_or(Value::Null);
+        // Also expose justification as a sibling var when present.
+        if let Some(j) = parsed.get("justification") {
+            ctx.vars.insert("justification".into(), j.clone());
+        }
+        Ok(NodeResult::Continue {
+            output_key: Self::output_key(node, "category"),
+            value: category,
+        })
+    }
+
+    /// Scorer: rate an item 0–100 against a rubric.
+    async fn run_scorer(
+        &self,
+        node: &WorkflowNode,
+        ctx: &mut ExecutionContext,
+    ) -> Result<NodeResult> {
+        let item_raw = node
+            .config
+            .get("item")
+            .and_then(|v| v.as_str())
+            .unwrap_or("input");
+        let item = Self::resolve_value(item_raw, ctx);
+        let item_str = item
+            .as_str()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| item.to_string());
+        let criteria = node
+            .config
+            .get("criteria")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Overall quality: 0-100");
+        let justify = node
+            .config
+            .get("include_justification")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let system = format!(
+            "You score the item from 0 to 100 against the criteria. Return JSON {{\"score\": <0-100>{}}}\nCriteria: {criteria}",
+            if justify { ", \"justification\": \"<why>\"" } else { "" }
+        );
+        let raw = self.inference.orchestrate(&system, &item_str, true).await?;
+        let parsed: Value = serde_json::from_str(crate::services::inference::strip_fences(&raw))
+            .unwrap_or(Value::Null);
+        let score = parsed.get("score").cloned().unwrap_or(Value::Null);
+        if let Some(j) = parsed.get("justification") {
+            ctx.vars.insert("justification".into(), j.clone());
+        }
+        Ok(NodeResult::Continue {
+            output_key: Self::output_key(node, "score"),
+            value: score,
+        })
+    }
+
+    /// Combine Text: {placeholder} template substitution against ctx.vars.
+    async fn run_combine_text(
+        &self,
+        node: &WorkflowNode,
+        ctx: &mut ExecutionContext,
+    ) -> Result<NodeResult> {
+        let format = node
+            .config
+            .get("format")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        // Combine Text uses single-brace {var}; support both {var} and {{var}}.
+        let mut out = format.to_string();
+        for (k, v) in &ctx.vars {
+            let rendered = v
+                .as_str()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| v.to_string());
+            out = out.replace(&format!("{{{{{k}}}}}"), &rendered);
+            out = out.replace(&format!("{{{k}}}"), &rendered);
+        }
+        Ok(NodeResult::Continue {
+            output_key: Self::output_key(node, "combined"),
+            value: Value::String(out),
+        })
+    }
+
+    /// Read JSON Values: extract dot-notation paths from a JSON string.
+    async fn run_read_json(
+        &self,
+        node: &WorkflowNode,
+        ctx: &mut ExecutionContext,
+    ) -> Result<NodeResult> {
+        let json_raw = node
+            .config
+            .get("json")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let source = Self::resolve_value(json_raw, ctx);
+        let parsed: Value = match &source {
+            Value::String(s) => serde_json::from_str(s).unwrap_or(Value::Null),
+            other => other.clone(),
+        };
+        let keys = node
+            .config
+            .get("keys")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let mut result = serde_json::Map::new();
+        for key in keys.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+            result.insert(key.to_string(), Self::json_path(&parsed, key));
+        }
+        let value = if result.len() == 1 {
+            result
+                .into_iter()
+                .next()
+                .map(|(_, v)| v)
+                .unwrap_or(Value::Null)
+        } else {
+            Value::Object(result)
+        };
+        Ok(NodeResult::Continue {
+            output_key: Self::output_key(node, "json_values"),
+            value,
+        })
+    }
+
+    /// Navigate a JSON value by dot notation with array indexing (`a.b.0.c`).
+    fn json_path(root: &Value, path: &str) -> Value {
+        let mut cur = root;
+        for seg in path.split('.') {
+            cur = match cur {
+                Value::Object(m) => m.get(seg).unwrap_or(&Value::Null),
+                Value::Array(a) => seg
+                    .parse::<usize>()
+                    .ok()
+                    .and_then(|i| a.get(i))
+                    .unwrap_or(&Value::Null),
+                _ => &Value::Null,
+            };
+        }
+        cur.clone()
+    }
+
+    /// Write JSON Value: set a value at a dot path in a JSON object.
+    async fn run_write_json(
+        &self,
+        node: &WorkflowNode,
+        ctx: &mut ExecutionContext,
+    ) -> Result<NodeResult> {
+        let json_raw = node
+            .config
+            .get("json")
+            .and_then(|v| v.as_str())
+            .unwrap_or("{}");
+        let source = Self::resolve_value(json_raw, ctx);
+        let mut root: Value = match &source {
+            Value::String(s) => serde_json::from_str(s).unwrap_or_else(|_| json!({})),
+            other => other.clone(),
+        };
+        let key = node
+            .config
+            .get("key")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let val_raw = node
+            .config
+            .get("value")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let new_val = Self::resolve_value(val_raw, ctx);
+        Self::json_set(&mut root, key, new_val);
+        let rendered = serde_json::to_string(&root).unwrap_or_else(|_| "{}".into());
+        Ok(NodeResult::Continue {
+            output_key: Self::output_key(node, "json_result"),
+            value: Value::String(rendered),
+        })
+    }
+
+    /// Set a value at a dot path, creating intermediate objects as needed.
+    fn json_set(root: &mut Value, path: &str, value: Value) {
+        let segs: Vec<&str> = path.split('.').filter(|s| !s.is_empty()).collect();
+        if segs.is_empty() {
+            return;
+        }
+        if !root.is_object() {
+            *root = json!({});
+        }
+        let mut cur = root;
+        for (i, seg) in segs.iter().enumerate() {
+            if i == segs.len() - 1 {
+                if let Value::Object(m) = cur {
+                    m.insert(seg.to_string(), value);
+                    return;
+                }
+            } else {
+                let obj = cur.as_object_mut().unwrap();
+                cur = obj.entry(seg.to_string()).or_insert_with(|| json!({}));
+                if !cur.is_object() {
+                    *cur = json!({});
+                }
+            }
+        }
+    }
+
+    /// Call API: generic HTTP call with headers + optional body.
+    async fn run_call_api(
+        &self,
+        node: &WorkflowNode,
+        ctx: &mut ExecutionContext,
+    ) -> Result<NodeResult> {
+        let method = node
+            .config
+            .get("method")
+            .and_then(|v| v.as_str())
+            .unwrap_or("GET")
+            .to_uppercase();
+        let url = Self::cfg_or_var(node, ctx, "url", "");
+        if url.is_empty() {
+            return Err(anyhow!("Call API node missing url"));
+        }
+        let client = reqwest::Client::new();
+        let mut req = match method.as_str() {
+            "POST" => client.post(&url),
+            "PUT" => client.put(&url),
+            "PATCH" => client.patch(&url),
+            "DELETE" => client.delete(&url),
+            _ => client.get(&url),
+        };
+        // Headers: array of {key, value} pairs.
+        if let Some(headers) = node.config.get("headers").and_then(|v| v.as_array()) {
+            for h in headers {
+                if let (Some(k), Some(v)) = (
+                    h.get("key").and_then(|x| x.as_str()),
+                    h.get("value").and_then(|x| x.as_str()),
+                ) {
+                    req = req.header(k, Self::interpolate(v, ctx));
+                }
+            }
+        }
+        if method != "GET" {
+            if let Some(body) = node.config.get("body").and_then(|v| v.as_str()) {
+                let body = Self::interpolate(body, ctx);
+                // Send as JSON if it parses, else raw.
+                match serde_json::from_str::<Value>(&body) {
+                    Ok(json_body) => req = req.json(&json_body),
+                    Err(_) => req = req.body(body),
+                }
+            }
+        }
+        let resp = req.send().await?;
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            return Err(anyhow!("Call API {} returned {}: {}", url, status, text));
+        }
+        // Prefer JSON, fall back to text.
+        let value = serde_json::from_str::<Value>(&text).unwrap_or(Value::String(text));
+        Ok(NodeResult::Continue {
+            output_key: Self::output_key(node, "api_response"),
+            value,
+        })
+    }
+
+    /// Custom MCP Server: call one tool on an external MCP server (JSON-RPC over HTTP).
+    async fn run_mcp_server(
+        &self,
+        node: &WorkflowNode,
+        ctx: &mut ExecutionContext,
+    ) -> Result<NodeResult> {
+        let server_url = Self::cfg_or_var(node, ctx, "server_url", "");
+        let tool = node
+            .config
+            .get("tool")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if server_url.is_empty() || tool.is_empty() {
+            return Err(anyhow!("MCP node requires server_url and tool"));
+        }
+        let args_raw = node
+            .config
+            .get("arguments")
+            .and_then(|v| v.as_str())
+            .unwrap_or("{}");
+        let arguments: Value =
+            serde_json::from_str(&Self::interpolate(args_raw, ctx)).unwrap_or(json!({}));
+        let body = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": { "name": tool, "arguments": arguments }
+        });
+        let resp = reqwest::Client::new()
+            .post(&server_url)
+            .json(&body)
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<Value>()
+            .await?;
+        // Return the JSON-RPC result payload if present, else the whole envelope.
+        let value = resp.get("result").cloned().unwrap_or(resp);
+        Ok(NodeResult::Continue {
+            output_key: Self::output_key(node, "mcp_result"),
+            value,
+        })
+    }
+
+    // ── Subflow (workflow-as-node) + Loop mode ────────────────────────────────
+    //
+    // A Subflow node runs another workflow as a single node. In Loop Mode it runs that subflow once
+    // per item of a list input, with bounded concurrency, collecting a list result. Both preserve
+    // the parent driver's "each node runs at most once per traversal" invariant: the fan-out happens
+    // *inside* this handler (an internal expansion), so the parent DAG still sees one Subflow node.
+
+    /// Load a workflow's graph by id and deserialize it into a WorkflowGraph.
+    async fn load_subflow_graph(&self, workflow_id: Uuid) -> Result<WorkflowGraph> {
+        let wf = crate::services::workflows::get_workflow(self.db, workflow_id)
+            .await
+            .map_err(|e| anyhow!("subflow: {e}"))?;
+        let graph: WorkflowGraph =
+            serde_json::from_value(wf.graph).map_err(|e| anyhow!("subflow graph parse: {e}"))?;
+        Ok(graph)
+    }
+
+    /// Parse the input_map config (JSON object) into (subflow-input-name → parent-var-or-literal).
+    fn subflow_input_map(node: &WorkflowNode) -> serde_json::Map<String, Value> {
+        node.config
+            .get("input_map")
+            .and_then(|v| match v {
+                Value::String(s) => serde_json::from_str::<Value>(s).ok(),
+                Value::Object(_) => Some(v.clone()),
+                _ => None,
+            })
+            .and_then(|v| v.as_object().cloned())
+            .unwrap_or_default()
+    }
+
+    /// Seed a child context's vars from the parent according to the input map. Each mapped value is
+    /// resolved as a parent variable name first, else treated as a literal.
+    fn seed_child_vars(
+        map: &serde_json::Map<String, Value>,
+        parent: &ExecutionContext,
+    ) -> HashMap<String, Value> {
+        let mut vars = HashMap::new();
+        // Carry the task target (repo/branch etc.) through so subflow SWE nodes still work.
+        if let Some(input) = parent.vars.get("input") {
+            vars.insert("input".to_string(), input.clone());
+        }
+        for (input_name, source) in map {
+            let value = match source {
+                Value::String(s) => parent
+                    .vars
+                    .get(s)
+                    .cloned()
+                    .unwrap_or(Value::String(s.clone())),
+                other => other.clone(),
+            };
+            vars.insert(input_name.clone(), value);
+        }
+        vars
+    }
+
+    /// Run one instance of a subflow graph with the given seeded vars, returning the collected
+    /// outputs (SubflowOutput node values, keyed by their `name`). Runs in a child ExecutionContext
+    /// that shares the task/agent/job but has its own vars and an incremented depth.
+    async fn run_subflow_once(
+        &self,
+        graph: &WorkflowGraph,
+        parent: &ExecutionContext,
+        seeded: HashMap<String, Value>,
+    ) -> Result<Value> {
+        let mut child = ExecutionContext {
+            task_id: parent.task_id,
+            agent_id: parent.agent_id,
+            job_id: parent.job_id,
+            lora_name: parent.lora_name.clone(),
+            persona_prompt: parent.persona_prompt.clone(),
+            vars: seeded,
+            effect_decisions: parent.effect_decisions.clone(),
+            subflow_depth: parent.subflow_depth + 1,
+            // Child subflow runs don't persist per-node rows (see field docs): avoids the concurrent
+            // attempt-number race in loop mode and keeps the DAG inspector to the parent graph.
+            persist: false,
+            // A subflow's SWE nodes run in the same environment as the parent workflow.
+            execution_environment: parent.execution_environment,
+        };
+
+        // Start at the subflow's Input nodes (its parameter boundary); if it has none, start at a
+        // Trigger; if neither, start at all source nodes.
+        let starts: Vec<String> = {
+            let inputs: Vec<String> = graph
+                .nodes
+                .iter()
+                .filter(|n| n.node_type == NodeType::SubflowInput)
+                .map(|n| n.id.clone())
+                .collect();
+            if !inputs.is_empty() {
+                inputs
+            } else if let Some(t) = graph
+                .nodes
+                .iter()
+                .find(|n| n.node_type == NodeType::Trigger)
+            {
+                vec![t.id.clone()]
+            } else {
+                graph.nodes.iter().map(|n| n.id.clone()).collect()
+            }
+        };
+
+        // Box the recursive engine call — execute_graph → execute_node → run_subflow →
+        // run_subflow_once → execute_graph is a recursive async cycle, which needs indirection.
+        Box::pin(self.execute_graph(graph, &mut child, &starts)).await?;
+
+        // Collect SubflowOutput values (written under "__subflow_out__<name>" keys).
+        let mut outputs = serde_json::Map::new();
+        for (k, v) in &child.vars {
+            if let Some(name) = k.strip_prefix("__subflow_out__") {
+                outputs.insert(name.to_string(), v.clone());
+            }
+        }
+        // If exactly one output, unwrap it; else return the object. If none, return the child's
+        // "input" (a subflow with no explicit outputs just passes through).
+        let value = if outputs.len() == 1 {
+            outputs
+                .into_iter()
+                .next()
+                .map(|(_, v)| v)
+                .unwrap_or(Value::Null)
+        } else if outputs.is_empty() {
+            child.vars.get("input").cloned().unwrap_or(Value::Null)
+        } else {
+            Value::Object(outputs)
+        };
+        Ok(value)
+    }
+
+    /// Subflow node: run the referenced workflow as a node. With `loop_mode`, fan out over a list
+    /// input (bounded concurrency); otherwise run once.
+    async fn run_subflow(
+        &self,
+        node: &WorkflowNode,
+        ctx: &mut ExecutionContext,
+    ) -> Result<NodeResult> {
+        if ctx.subflow_depth >= MAX_SUBFLOW_DEPTH {
+            return Err(anyhow!(
+                "subflow nesting too deep ({}) — a workflow may include itself",
+                ctx.subflow_depth
+            ));
+        }
+        let workflow_id = node
+            .config
+            .get("workflow_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow!("subflow node missing workflow_id"))?;
+        let workflow_id = Uuid::parse_str(workflow_id)
+            .map_err(|_| anyhow!("subflow workflow_id is not a valid uuid"))?;
+        let graph = self.load_subflow_graph(workflow_id).await?;
+        let map = Self::subflow_input_map(node);
+        let output_key = Self::output_key(node, "subflow_result");
+        let loop_mode = node
+            .config
+            .get("loop_mode")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        if !loop_mode {
+            let seeded = Self::seed_child_vars(&map, ctx);
+            let value = self.run_subflow_once(&graph, ctx, seeded).await?;
+            return Ok(NodeResult::Continue { output_key, value });
+        }
+
+        // Loop mode: the single mapped input (or "input") is a list; run the subflow per item.
+        let (list, item_input_name) = Self::loop_list_and_key(&map, ctx);
+        let max_parallel = node
+            .config
+            .get("max_parallel")
+            .and_then(|v| {
+                v.as_u64()
+                    .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+            })
+            .unwrap_or(4)
+            .clamp(1, 15) as usize;
+        let error_shield = node
+            .config
+            .get("error_shield")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        let results = self
+            .run_loop(
+                &graph,
+                ctx,
+                &map,
+                &item_input_name,
+                list,
+                max_parallel,
+                error_shield,
+            )
+            .await?;
+        Ok(NodeResult::Continue {
+            output_key,
+            value: Value::Array(results),
+        })
+    }
+
+    /// Determine the list to fan out over in loop mode, and the subflow-input name each item is
+    /// bound to. Uses the first mapped input whose resolved parent value is an array; falls back to
+    /// the "input" var. Returns (items, input_name).
+    fn loop_list_and_key(
+        map: &serde_json::Map<String, Value>,
+        ctx: &ExecutionContext,
+    ) -> (Vec<Value>, String) {
+        for (input_name, source) in map {
+            if let Value::String(var) = source {
+                if let Some(Value::Array(items)) = ctx.vars.get(var) {
+                    return (items.clone(), input_name.clone());
+                }
+            }
+        }
+        // Fallback: the "input" var if it's an array.
+        if let Some(Value::Array(items)) = ctx.vars.get("input") {
+            let name = map
+                .keys()
+                .next()
+                .cloned()
+                .unwrap_or_else(|| "input".to_string());
+            return (items.clone(), name);
+        }
+        (Vec::new(), "input".to_string())
+    }
+
+    /// Run a subflow once per list item with bounded concurrency. Static inputs (non-list mappings)
+    /// are seeded on every iteration; the loop input name is overwritten with the item. With
+    /// `error_shield`, a failed iteration yields an `{ "error": … }` entry instead of aborting.
+    #[allow(clippy::too_many_arguments)]
+    async fn run_loop(
+        &self,
+        graph: &WorkflowGraph,
+        ctx: &ExecutionContext,
+        map: &serde_json::Map<String, Value>,
+        item_input_name: &str,
+        list: Vec<Value>,
+        max_parallel: usize,
+        error_shield: bool,
+    ) -> Result<Vec<Value>> {
+        use futures::stream::{self, StreamExt};
+
+        let base = Self::seed_child_vars(map, ctx);
+        let results = stream::iter(list.into_iter().enumerate())
+            .map(|(i, item)| {
+                let mut seeded = base.clone();
+                seeded.insert(item_input_name.to_string(), item);
+                let graph_ref = graph;
+                async move {
+                    match self.run_subflow_once(graph_ref, ctx, seeded).await {
+                        Ok(v) => Ok(v),
+                        Err(e) if error_shield => Ok(json!({ "error": e.to_string(), "index": i })),
+                        Err(e) => Err(e),
+                    }
+                }
+            })
+            .buffered(max_parallel)
+            .collect::<Vec<Result<Value>>>()
+            .await;
+
+        results.into_iter().collect()
     }
 
     async fn run_github(
@@ -1952,6 +3149,26 @@ impl<'a> WorkflowEngine<'a> {
 
     // ── Work-execution nodes (pluggable backend) ──────────────────────────────
 
+    /// Resolve the run's **execution environment** into a concrete backend + coding-agent runtime.
+    /// The environment is chosen ONCE at the WORKFLOW level (not per node) so every sprite node in a
+    /// run uses the same backend + agent — this is what lets the fbx-agent's durable session span the
+    /// whole DAG without a foreign runtime stomping the shared working tree. Precedence:
+    /// the workflow's environment (`ctx.execution_environment`) → the platform default
+    /// (optimizer fbx-agent). Runs identically for every SWE node in the run.
+    fn resolve_execution_env(
+        &self,
+        ctx: &ExecutionContext,
+    ) -> (
+        crate::services::execution::ExecutionBackendKind,
+        Option<crate::services::execution::AgentRuntimeKind>,
+    ) {
+        use crate::services::execution::ExecutionEnvironment;
+        // Unset workflow environment => the platform default: the optimizer-routed fbx-agent.
+        ctx.execution_environment
+            .unwrap_or(ExecutionEnvironment::OptimizerFbx)
+            .resolve()
+    }
+
     /// Run a coding agent (Managed Agents / Sprite) to implement the task on a repo. The agent
     /// owns the read→edit→test→fix loop; its transcript streams into this node's logs and the
     /// resulting diff becomes the node output. Coarse-grained by design.
@@ -1960,27 +3177,15 @@ impl<'a> WorkflowEngine<'a> {
         node: &WorkflowNode,
         ctx: &mut ExecutionContext,
     ) -> Result<NodeResult> {
-        use crate::services::execution::{ExecutionBackendKind, TaskBrief};
+        use crate::services::execution::TaskBrief;
 
         let backends = self
             .backends
             .clone()
             .ok_or_else(|| anyhow!("AgentImplement: execution backends not configured"))?;
 
-        // Resolve backend: node override → agent default → managed.
-        let kind = match node.config.get("backend").and_then(|v| v.as_str()) {
-            Some(s) => ExecutionBackendKind::from_str_opt(s),
-            None => {
-                let row = sqlx::query!(
-                    "SELECT execution_backend FROM agents WHERE id = $1",
-                    ctx.agent_id
-                )
-                .fetch_optional(self.db)
-                .await?;
-                row.and_then(|r| ExecutionBackendKind::from_str_opt(&r.execution_backend))
-            }
-        }
-        .unwrap_or_default();
+        // Resolve the workflow-level execution environment into a concrete backend + runtime.
+        let (kind, runtime_override) = self.resolve_execution_env(ctx);
 
         // Task text: explicit config, else a var, else the task input description.
         let task_text = node
@@ -2050,31 +3255,53 @@ impl<'a> WorkflowEngine<'a> {
         // tools span its own vault + the company repo vault).
         let overlays = self.build_vault_overlays(ctx, repo.as_deref()).await;
 
-        // Context-engineering layer: assemble an Execution Blueprint from the professional's vault
-        // (style rules + architecture map + golden snippets, distilled in one LoRA call) plus the
-        // company repo context, and prepend it to the instructions. Gives the builder standing
-        // preferences + the codebase facts up front so it only escalates to consult_principal for
-        // genuine ambiguity. Best-effort — a vault miss or distill failure leaves it as-authored.
-        match crate::services::blueprint::build_blueprint(
-            self.db,
-            self.qdrant,
-            self.inference,
-            ctx.agent_id,
-            ctx.lora_name.as_deref(),
-            &ctx.persona_prompt,
-            &task_text,
-            &overlays,
-        )
-        .await
-        {
-            Ok(bp) if !bp.trim().is_empty() => {
-                instructions = Some(match instructions {
-                    Some(existing) => format!("{bp}\n\n{existing}"),
-                    None => bp,
-                });
-            }
-            Ok(_) => {}
-            Err(e) => tracing::warn!("blueprint assembly failed for task {}: {}", ctx.task_id, e),
+        // Context-engineering layer: the Execution Blueprint — the professional's vault (style
+        // rules + architecture map + golden snippets) plus company repo context, distilled in one
+        // LoRA call, prepended to the instructions so the builder starts grounded and only escalates
+        // to consult_principal for genuine ambiguity.
+        //
+        // Prefer a blueprint precomputed by an upstream Build Blueprint node (via `blueprint_var`,
+        // default `blueprint`) to avoid a second LoRA distill; otherwise build it inline. Note the
+        // overlays above are still built unconditionally — the taste token below depends on them for
+        // the agent's browse-tool scope, independent of who produced the blueprint.
+        let blueprint_var = node
+            .config
+            .get("blueprint_var")
+            .and_then(|v| v.as_str())
+            .unwrap_or("blueprint");
+        let precomputed = ctx
+            .vars
+            .get(blueprint_var)
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .filter(|s| !s.trim().is_empty());
+        let blueprint: Option<String> = match precomputed {
+            Some(bp) => Some(bp),
+            None => match crate::services::blueprint::build_blueprint(
+                self.db,
+                self.qdrant,
+                self.inference,
+                ctx.agent_id,
+                ctx.lora_name.as_deref(),
+                &ctx.persona_prompt,
+                &task_text,
+                &overlays,
+            )
+            .await
+            {
+                Ok(bp) if !bp.trim().is_empty() => Some(bp),
+                Ok(_) => None,
+                Err(e) => {
+                    tracing::warn!("blueprint assembly failed for task {}: {}", ctx.task_id, e);
+                    None
+                }
+            },
+        };
+        if let Some(bp) = blueprint {
+            instructions = Some(match instructions {
+                Some(existing) => format!("{bp}\n\n{existing}"),
+                None => bp,
+            });
         }
 
         // Mint a per-task taste token carrying the persona + LoRA + that overlay scope.
@@ -2087,6 +3314,9 @@ impl<'a> WorkflowEngine<'a> {
             &overlays,
         )
         .await?;
+
+        let optimizer_creds =
+            crate::services::execution::agent_optimizer_creds(self.db, ctx.agent_id).await;
 
         let brief = TaskBrief {
             task_id: ctx.task_id,
@@ -2101,8 +3331,31 @@ impl<'a> WorkflowEngine<'a> {
             persona_prompt: ctx.persona_prompt.clone(),
             cf_finetune_id: ctx.lora_name.clone(),
             github_token,
+            anthropic_api_key: crate::services::execution::agent_anthropic_key(
+                self.db,
+                ctx.agent_id,
+            )
+            .await,
             taste_token,
             api_base_url,
+            // Per-node model pin from the `model_preference` field; blank => the runtime uses
+            // the Implement default (env `FLABORFUL_MODEL_IMPLEMENT`).
+            model: node
+                .config
+                .get("model_preference")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
+            // Optimizer-edge creds for the fbx-agent runtime (agent key → server key; server
+            // base URL). Only consumed when the agent's runtime is fbx_agent; harmless otherwise.
+            optimizer_base_url: optimizer_creds.base_url.clone(),
+            optimizer_key: optimizer_creds.key.clone(),
+            provider_key: optimizer_creds.provider_key.clone(),
+            // The DAG blackboard, passed to the fbx-agent as this node's upstream inputs.
+            vars: serde_json::to_value(&ctx.vars).unwrap_or(serde_json::Value::Null),
+            // Per-node runtime from the resolved execution environment (Sprite backend).
+            runtime_override,
         };
 
         let backend = backends.get(kind);
@@ -2164,6 +3417,9 @@ impl<'a> WorkflowEngine<'a> {
                 "head_sha": result.head_sha,
                 "branch": branch,
                 "status": result.status,
+                // Optimizer cost/savings for this run (fbx-agent only; None otherwise) → persists in
+                // node_executions.output_json → the executions UI cost chip.
+                "cost": result.cost,
             }),
         })
     }
@@ -2360,25 +3616,15 @@ impl<'a> WorkflowEngine<'a> {
         ctx: &mut ExecutionContext,
         fix_task: &str,
     ) -> Result<()> {
-        use crate::services::execution::{ExecutionBackendKind, TaskBrief};
+        use crate::services::execution::TaskBrief;
         let backends = self
             .backends
             .clone()
             .ok_or_else(|| anyhow!("TestGate: execution backends not configured"))?;
 
-        let kind = match node.config.get("backend").and_then(|v| v.as_str()) {
-            Some(s) => ExecutionBackendKind::from_str_opt(s),
-            None => {
-                let row = sqlx::query!(
-                    "SELECT execution_backend FROM agents WHERE id = $1",
-                    ctx.agent_id
-                )
-                .fetch_optional(self.db)
-                .await?;
-                row.and_then(|r| ExecutionBackendKind::from_str_opt(&r.execution_backend))
-            }
-        }
-        .unwrap_or_default();
+        // The builder-fix runs in the SAME workflow execution environment as the implement, so the
+        // fix is driven by the same backend + coding agent.
+        let (kind, runtime_override) = self.resolve_execution_env(ctx);
 
         let repo = ctx
             .vars
@@ -2411,6 +3657,9 @@ impl<'a> WorkflowEngine<'a> {
         )
         .await?;
 
+        let optimizer_creds =
+            crate::services::execution::agent_optimizer_creds(self.db, ctx.agent_id).await;
+
         let brief = TaskBrief {
             task_id: ctx.task_id,
             kind: crate::services::execution::TaskKind::Implement,
@@ -2429,8 +3678,27 @@ impl<'a> WorkflowEngine<'a> {
             persona_prompt: ctx.persona_prompt.clone(),
             cf_finetune_id: ctx.lora_name.clone(),
             github_token,
+            anthropic_api_key: crate::services::execution::agent_anthropic_key(
+                self.db,
+                ctx.agent_id,
+            )
+            .await,
             taste_token,
             api_base_url,
+            // Match the gate node's model pin so the fix runs on the same model as the
+            // implement; blank => the Implement default.
+            model: node
+                .config
+                .get("model_preference")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
+            optimizer_base_url: optimizer_creds.base_url.clone(),
+            optimizer_key: optimizer_creds.key.clone(),
+            provider_key: optimizer_creds.provider_key.clone(),
+            vars: serde_json::to_value(&ctx.vars).unwrap_or(serde_json::Value::Null),
+            runtime_override,
         };
 
         let backend = backends.get(kind);
@@ -2975,7 +4243,8 @@ impl<'a> WorkflowEngine<'a> {
         Ok(())
     }
 
-    async fn deliver(&self, task_id: Uuid, output: &str) -> Result<()> {
+    async fn deliver(&self, ctx: &ExecutionContext, output: &str) -> Result<()> {
+        let task_id = ctx.task_id;
         sqlx::query!(
             r#"UPDATE tasks SET status = 'delivered', output_approved = $1,
                delivered_at = NOW() WHERE id = $2"#,
@@ -2984,6 +4253,24 @@ impl<'a> WorkflowEngine<'a> {
         )
         .execute(self.db)
         .await?;
+
+        // Grade the delivered output against the agent's evaluation criteria (opt-in; no-op if the
+        // agent has none). Best-effort — a grading hiccup must not undo a successful delivery.
+        let task_input = ctx
+            .vars
+            .get("input")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_default();
+        let _ = crate::services::evaluations::evaluate_task(
+            self.db,
+            self.inference,
+            ctx.agent_id,
+            task_id,
+            &task_input,
+            output,
+        )
+        .await;
 
         // Notify company and audit-log
         if let Ok(row) = sqlx::query!(
@@ -3625,5 +4912,80 @@ mod tests {
         // Every node runs exactly once; D appears only once despite two predecessors.
         assert_eq!(visit_order.iter().filter(|x| x.as_str() == "d").count(), 1);
         assert_eq!(visit_order.len(), 4);
+    }
+
+    // A minimal ExecutionContext for testing the pure subflow/loop helpers (no DB needed).
+    fn test_ctx(vars: Vec<(&str, Value)>) -> ExecutionContext {
+        ExecutionContext {
+            task_id: Uuid::nil(),
+            agent_id: Uuid::nil(),
+            job_id: Uuid::nil(),
+            lora_name: None,
+            persona_prompt: String::new(),
+            vars: vars.into_iter().map(|(k, v)| (k.to_string(), v)).collect(),
+            effect_decisions: HashMap::new(),
+            subflow_depth: 0,
+            persist: true,
+            execution_environment: None,
+        }
+    }
+
+    #[test]
+    fn subflow_input_map_parses_json_string_and_object() {
+        let mut n = node("s", NodeType::Subflow);
+        n.config = json!({ "input_map": "{\"url\": \"current_url\"}" });
+        let m = WorkflowEngine::subflow_input_map(&n);
+        assert_eq!(m.get("url").and_then(|v| v.as_str()), Some("current_url"));
+
+        n.config = json!({ "input_map": { "x": "y" } });
+        let m = WorkflowEngine::subflow_input_map(&n);
+        assert_eq!(m.get("x").and_then(|v| v.as_str()), Some("y"));
+    }
+
+    #[test]
+    fn seed_child_vars_resolves_vars_and_literals() {
+        let ctx = test_ctx(vec![
+            ("current_url", json!("https://x")),
+            ("input", json!("root")),
+        ]);
+        let mut map = serde_json::Map::new();
+        map.insert("url".into(), json!("current_url")); // resolves to a var
+        map.insert("mode".into(), json!(42)); // literal (non-string)
+        let seeded = WorkflowEngine::seed_child_vars(&map, &ctx);
+        assert_eq!(seeded.get("url"), Some(&json!("https://x")));
+        assert_eq!(seeded.get("mode"), Some(&json!(42)));
+        // task input carries through so subflow SWE nodes still work
+        assert_eq!(seeded.get("input"), Some(&json!("root")));
+    }
+
+    #[test]
+    fn seed_child_vars_unknown_var_becomes_literal_string() {
+        let ctx = test_ctx(vec![]);
+        let mut map = serde_json::Map::new();
+        map.insert("q".into(), json!("not_a_var"));
+        let seeded = WorkflowEngine::seed_child_vars(&map, &ctx);
+        assert_eq!(seeded.get("q"), Some(&json!("not_a_var")));
+    }
+
+    #[test]
+    fn loop_list_picks_the_array_mapped_input() {
+        let ctx = test_ctx(vec![
+            ("urls", json!(["a", "b", "c"])),
+            ("threshold", json!(5)),
+        ]);
+        let mut map = serde_json::Map::new();
+        map.insert("threshold".into(), json!("threshold")); // scalar → not the loop input
+        map.insert("url".into(), json!("urls")); // array → the loop input
+        let (list, key) = WorkflowEngine::loop_list_and_key(&map, &ctx);
+        assert_eq!(list.len(), 3);
+        assert_eq!(key, "url");
+    }
+
+    #[test]
+    fn loop_list_falls_back_to_input_array() {
+        let ctx = test_ctx(vec![("input", json!([1, 2]))]);
+        let map = serde_json::Map::new();
+        let (list, _key) = WorkflowEngine::loop_list_and_key(&map, &ctx);
+        assert_eq!(list.len(), 2);
     }
 }

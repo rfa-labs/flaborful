@@ -22,6 +22,14 @@ use crate::services::inference::InferenceClient;
 const API: &str = "https://api.anthropic.com/v1";
 const BETA: &str = "managed-agents-2026-04-01";
 const MODEL: &str = "claude-opus-4-8";
+
+tokio::task_local! {
+    /// The per-run Anthropic API key for the current `run_implementation` future. Set for the
+    /// duration of a single run and read by `req()`, so every request in that run bills to the
+    /// professional's own key without threading the key through every helper. Admin paths
+    /// (`reap_orphans`/`kill_managed_runs`) run outside this scope and use the server key.
+    static RUN_API_KEY: String;
+}
 /// The single shared environment name. One reused environment, never one-per-run (those leak).
 const ENV_NAME: &str = "flaborful-swe";
 
@@ -56,9 +64,14 @@ impl ManagedAgentsBackend {
     }
 
     fn req(&self, method: reqwest::Method, path: &str) -> reqwest::RequestBuilder {
+        // Inside a run, `RUN_API_KEY` holds the professional's own key; elsewhere (admin sweeps)
+        // it isn't set and we fall back to the server key.
+        let api_key = RUN_API_KEY
+            .try_with(|k| k.clone())
+            .unwrap_or_else(|_| self.api_key.clone());
         self.http
             .request(method, format!("{}{}", API, path))
-            .header("x-api-key", &self.api_key)
+            .header("x-api-key", api_key)
             .header("anthropic-version", "2023-06-01")
             .header("anthropic-beta", BETA)
     }
@@ -137,7 +150,11 @@ impl ManagedAgentsBackend {
         {
             Ok(resp) => {
                 let v: Value = resp.json().await.unwrap_or(json!({}));
-                let sessions = v.get("data").and_then(|d| d.as_array()).cloned().unwrap_or_default();
+                let sessions = v
+                    .get("data")
+                    .and_then(|d| d.as_array())
+                    .cloned()
+                    .unwrap_or_default();
                 let mut deleted = 0;
                 let mut running = 0;
                 for s in &sessions {
@@ -172,7 +189,11 @@ impl ManagedAgentsBackend {
         {
             Ok(resp) => {
                 let v: Value = resp.json().await.unwrap_or(json!({}));
-                let envs = v.get("data").and_then(|d| d.as_array()).cloned().unwrap_or_default();
+                let envs = v
+                    .get("data")
+                    .and_then(|d| d.as_array())
+                    .cloned()
+                    .unwrap_or_default();
                 let mut deleted = 0;
                 for env in &envs {
                     let id = env.get("id").and_then(|x| x.as_str()).unwrap_or("");
@@ -205,9 +226,17 @@ impl ManagedAgentsBackend {
         }
         let mut acted = 0;
 
-        if let Ok(resp) = self.req(reqwest::Method::GET, "/sessions?limit=100").send().await {
+        if let Ok(resp) = self
+            .req(reqwest::Method::GET, "/sessions?limit=100")
+            .send()
+            .await
+        {
             let v: Value = resp.json().await.unwrap_or(json!({}));
-            let sessions = v.get("data").and_then(|d| d.as_array()).cloned().unwrap_or_default();
+            let sessions = v
+                .get("data")
+                .and_then(|d| d.as_array())
+                .cloned()
+                .unwrap_or_default();
             for s in &sessions {
                 let id = s.get("id").and_then(|x| x.as_str()).unwrap_or("");
                 if id.is_empty() {
@@ -285,9 +314,11 @@ impl ManagedAgentsBackend {
                  the COMPANY's vault (files/symbols, decisions in their codebase — proprietary \
                  detail is fine), and `record_experience` to write the transferable lesson into \
                  YOUR OWN vault (architecture/patterns you used and learned — NO company name, \
-                 secrets, or proprietary identifiers). search_vault first and set `related` so each \
-                 note connects into the existing graph. Then output a concise summary of what you \
-                 changed."
+                 secrets, or proprietary identifiers). If this task followed a repeatable PROCEDURE \
+                 worth reusing (a sequence you'd do the same way next time), call `write_skill` to \
+                 save it as a step-by-step playbook in your vault. search_vault first and set \
+                 `related` so each note connects into the existing graph. Then output a concise \
+                 summary of what you changed."
             }
             super::TaskKind::Ingest => {
                 "You are documenting a codebase into the professional's knowledge vault on their \
@@ -389,9 +420,12 @@ impl ManagedAgentsBackend {
     /// Tear down a session (best-effort). Called on both success and failure so we never orphan a
     /// running session on Anthropic's side.
     async fn delete_session(&self, session_id: &str) -> Result<()> {
-        self.req(reqwest::Method::DELETE, &format!("/sessions/{}", session_id))
-            .send()
-            .await?;
+        self.req(
+            reqwest::Method::DELETE,
+            &format!("/sessions/{}", session_id),
+        )
+        .send()
+        .await?;
         Ok(())
     }
 
@@ -419,9 +453,9 @@ impl ManagedAgentsBackend {
         let mut transcript = String::new();
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
         let deadline = std::time::Instant::now() + Duration::from_secs(60 * 30); // 30 min hard cap
-        // Stall watchdog: if no NEW event arrives for this long, the session is hung/interrupted
-        // and producing nothing (e.g. a turn was interrupted but never went idle). Give up rather
-        // than poll a dead session for the full 30 minutes.
+                                                                                 // Stall watchdog: if no NEW event arrives for this long, the session is hung/interrupted
+                                                                                 // and producing nothing (e.g. a turn was interrupted but never went idle). Give up rather
+                                                                                 // than poll a dead session for the full 30 minutes.
         let stall_limit = Duration::from_secs(60 * 5);
         let mut last_progress = std::time::Instant::now();
 
@@ -559,31 +593,31 @@ impl ManagedAgentsBackend {
                         // passes. This makes vault_notes.repo authoritative so the resume check
                         // ("skip repos already documented") is reliable rather than trusting the
                         // agent to tag each note correctly.
-                        if matches!(name, "upsert_note" | "record_experience" | "record_technical")
-                        {
+                        if matches!(
+                            name,
+                            "upsert_note" | "record_experience" | "record_technical"
+                        ) {
                             if let (Some(obj), Some(repo)) = (args.as_object_mut(), &brief.repo) {
                                 obj.insert("repo".into(), json!(repo));
                             }
                         }
-                        let result = match super::taste::resolve_vault_scope(
-                            &self.db,
-                            &brief.taste_token,
-                        )
-                        .await
-                        {
-                            Ok((owner, overlays)) => crate::services::vault::handle_tool(
-                                &self.db,
-                                &self.qdrant,
-                                &self.inference,
-                                owner,
-                                &overlays,
-                                name,
-                                &args,
-                            )
-                            .await
-                            .unwrap_or_else(|e| format!("(vault error: {})", e)),
-                            Err(e) => format!("(vault auth failed: {})", e),
-                        };
+                        let result =
+                            match super::taste::resolve_vault_scope(&self.db, &brief.taste_token)
+                                .await
+                            {
+                                Ok((owner, overlays)) => crate::services::vault::handle_tool(
+                                    &self.db,
+                                    &self.qdrant,
+                                    &self.inference,
+                                    owner,
+                                    &overlays,
+                                    name,
+                                    &args,
+                                )
+                                .await
+                                .unwrap_or_else(|e| format!("(vault error: {})", e)),
+                                Err(e) => format!("(vault auth failed: {})", e),
+                            };
                         sink.push(&format!(
                             "[{}] → {}",
                             name,
@@ -645,15 +679,35 @@ impl ExecutionBackend for ManagedAgentsBackend {
         brief: &TaskBrief,
         sink: &dyn TranscriptSink,
     ) -> Result<ExecResult> {
-        if !self.enabled {
-            sink.push("[managed-agents] ANTHROPIC_API_KEY not set — skipping execution")
-                .await;
+        // Claude Code Managed Cloud bills against the professional's OWN Anthropic key — there is
+        // no fallback to the server key. If none is on file, skip with a clear message.
+        let run_key = brief
+            .anthropic_api_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|k| !k.is_empty());
+        let Some(run_key) = run_key else {
+            sink.push(
+                "[managed-agents] no Anthropic API key on this agent — add your own key under \
+                 “Where your agent does work” to run on Claude Code Managed Cloud",
+            )
+            .await;
             return Ok(ExecResult {
                 status: "skipped".into(),
                 ..Default::default()
             });
-        }
+        };
 
+        RUN_API_KEY
+            .scope(run_key.to_string(), self.run_inner(brief, sink))
+            .await
+    }
+}
+
+impl ManagedAgentsBackend {
+    /// The actual run body, executed inside the `RUN_API_KEY` task-local scope so every `req()`
+    /// uses the professional's key.
+    async fn run_inner(&self, brief: &TaskBrief, sink: &dyn TranscriptSink) -> Result<ExecResult> {
         let env_id = self.ensure_environment().await?;
         let agent_id = self.create_agent(brief).await?;
         let session_id = self.create_session(&agent_id, &env_id, brief).await?;
@@ -668,7 +722,8 @@ impl ExecutionBackend for ManagedAgentsBackend {
             Ok(t) => t,
             Err(e) => {
                 let _ = self.delete_session(&session_id).await;
-                sink.push(&format!("[managed-agents] session ended: {e}")).await;
+                sink.push(&format!("[managed-agents] session ended: {e}"))
+                    .await;
                 return Err(e);
             }
         };
@@ -705,6 +760,8 @@ impl ExecutionBackend for ManagedAgentsBackend {
             test_summary: None,
             head_sha: None,
             status: "completed".into(),
+            // Managed Agents runs on Anthropic directly, not the optimizer edge — no cost block.
+            cost: None,
         })
     }
 }
@@ -713,7 +770,12 @@ impl ExecutionBackend for ManagedAgentsBackend {
 fn is_vault_tool(name: &str) -> bool {
     matches!(
         name,
-        "upsert_note" | "list_vault" | "read_note" | "search_vault" | "follow_links"
+        "upsert_note"
+            | "list_vault"
+            | "read_note"
+            | "search_vault"
+            | "follow_links"
+            | "write_skill"
     )
 }
 
@@ -777,6 +839,21 @@ fn vault_tool_specs() -> Vec<Value> {
                 "properties": {
                     "slug": { "type": "string" }, "title": { "type": "string" },
                     "body": { "type": "string" }, "layer": { "type": "string" },
+                    "related": { "type": "array", "items": { "type": "string" } }
+                },
+                "required": ["slug", "body"]
+            }
+        }),
+        json!({
+            "type": "custom", "name": "write_skill",
+            "description": "Save a reusable SKILL in YOUR OWN vault — a step-by-step playbook for a task you did well, so future runs can repeat it consistently. 'when_to_use' is the one-line trigger that decides when this skill loads into a future task's brief; 'body' is the numbered, prescriptive steps. Prefer this over a plain note when the knowledge is a repeatable PROCEDURE (e.g. 'how I add a migration', 'my PR checklist'). Skills are transferable and default to shareable — keep them free of the company's proprietary specifics.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "slug": { "type": "string" }, "title": { "type": "string" },
+                    "when_to_use": { "type": "string" },
+                    "body": { "type": "string" },
+                    "domain": { "type": "string" },
                     "related": { "type": "array", "items": { "type": "string" } }
                 },
                 "required": ["slug", "body"]

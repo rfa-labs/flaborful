@@ -25,6 +25,7 @@ use crate::{
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/github/ingest", post(ingest_github))
+        .route("/google-docs/ingest", post(ingest_google_docs))
         .route("/scenarios/:profession", get(get_scenarios))
         .route("/interview/submit", post(submit_interview))
         // Slim, open-form interview (communication & reasoning style → style-rule vault notes).
@@ -80,6 +81,26 @@ struct IngestGitHubRequest {
     /// already in the vault are skipped (resume), so a re-run only fills in the missing ones.
     #[serde(default)]
     force: bool,
+    /// The repos to ingest, exactly as the user picked them in the onboarding repo-picker. Each is
+    /// a `(full_name, default_branch)` pair sourced from `/auth/connections/github/repos` (which
+    /// paginates and carries the authoritative default branch) — so the backend never has to guess
+    /// a branch or rely on the README-capped style-guide profile. When empty/omitted we fall back
+    /// to the repos in the fetched profile, so callers that don't pass a selection still work.
+    #[serde(default)]
+    repos: Vec<RepoSelection>,
+}
+
+#[derive(Deserialize)]
+struct RepoSelection {
+    /// "owner/repo" — the authoritative clone target (owner may be an org/other account).
+    full_name: String,
+    /// The branch to check out. Optional; defaults to "main" if the client omits it.
+    #[serde(default = "default_branch")]
+    branch: String,
+}
+
+fn default_branch() -> String {
+    "main".to_string()
 }
 
 #[derive(Serialize)]
@@ -109,8 +130,22 @@ async fn ingest_github(
         .await
         .map_err(AppError::Internal)?;
 
+    // The repos to work from — the user's picker selection, as authoritative (full_name, branch)
+    // pairs. Both the style guide AND the vault build from exactly these; repo selection happens
+    // before either. With no selection (a caller that doesn't drive the picker), fall back to the
+    // legacy auto-discovery `ingest`, which fetches and caps its own repo list.
+    let selected: Vec<(String, String)> = body
+        .repos
+        .iter()
+        .map(|r| (r.full_name.clone(), r.branch.clone()))
+        .collect();
+
     let ingestion = GitHubIngestion::new(Some(token.clone()));
-    let profile = ingestion.ingest(None).await?;
+    let profile = if selected.is_empty() {
+        ingestion.ingest(None).await?
+    } else {
+        ingestion.ingest_selected(&selected).await?
+    };
     let repos_analyzed = profile.repos.len();
 
     // Style-guide extraction is a *best-effort* persona seed via the inference provider (Ollama
@@ -218,15 +253,19 @@ async fn ingest_github(
     .fetch_optional(&state.db)
     .await?
     .flatten();
-    // Use each repo's authoritative `full_name` ("owner/repo") for the clone target — the owner
-    // can be an org or another account, NOT the authenticated user. Using `<user>/<name>` here was
-    // wrong for org/collaborator repos and produced "Repository not found" in the git proxy.
-    let repos: Vec<(String, String)> = profile
-        .repos
-        .iter()
-        .take(5)
-        .map(|r| (r.full_name.clone(), r.default_branch.clone()))
-        .collect();
+    // Document exactly the repos the user picked — the same selection the style guide used above,
+    // no cap. Each carries its authoritative `full_name` ("owner/repo", the clone target — the
+    // owner can be an org/other account, NOT the authenticated user) and branch, so we never guess
+    // a branch or truncate. With no selection, fall back to every repo in the fetched profile.
+    let repos: Vec<(String, String)> = if selected.is_empty() {
+        profile
+            .repos
+            .iter()
+            .map(|r| (r.full_name.clone(), r.default_branch.clone()))
+            .collect()
+    } else {
+        selected.clone()
+    };
     crate::services::onboarding::ingest::spawn_ingestion(
         state.db.clone(),
         state.backends.clone(),
@@ -243,6 +282,91 @@ async fn ingest_github(
         style_guide,
         persona_prompt,
     }))
+}
+
+#[derive(Deserialize)]
+struct IngestGoogleDocsRequest {
+    agent_id: Uuid,
+}
+
+/// POST /onboarding/google-docs/ingest — ingest the professional's Google Docs into their vault
+/// (the first non-code likeness source). Resolves the owner's Google connection, fetches their
+/// docs, and distills each into a vault note in the background (returns immediately, like GitHub).
+async fn ingest_google_docs(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Json(body): Json<IngestGoogleDocsRequest>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    crate::services::authz::require_agent_owner(&state.db, auth.user_id, body.agent_id).await?;
+
+    let conn = connections::get_for_user(&state.db, auth.user_id, ConnectionProvider::Google)
+        .await
+        .map_err(AppError::Internal)?
+        .ok_or_else(|| {
+            AppError::BadRequest("Google account not connected. Connect Google first.".into())
+        })?;
+    let token = connections::fresh_access_token(&state.db, &conn)
+        .await
+        .map_err(AppError::Internal)?;
+
+    // Persona + LoRA so notes are written in the professional's voice (best-effort).
+    let row = sqlx::query!(
+        "SELECT persona_system_prompt, cf_finetune_id FROM agents WHERE id = $1",
+        body.agent_id
+    )
+    .fetch_optional(&state.db)
+    .await?;
+    let principal = row.map(|r| {
+        (
+            r.persona_system_prompt.unwrap_or_default(),
+            r.cf_finetune_id,
+        )
+    });
+
+    let db = state.db.clone();
+    let qdrant = state.qdrant.clone();
+    let inference = state.inference.clone();
+    let owner = crate::services::vault::VaultOwner::Agent(body.agent_id);
+    tokio::spawn(async move {
+        use crate::services::onboarding::documents;
+        match documents::fetch_google_docs(&token, 15).await {
+            Ok(docs) if !docs.is_empty() => {
+                let _ = documents::ingest_documents(
+                    &db,
+                    &qdrant,
+                    &inference,
+                    owner,
+                    principal,
+                    "google_docs",
+                    docs,
+                )
+                .await;
+            }
+            Ok(_) => {
+                // Nothing to ingest — still emit a completion event so the UI stops waiting.
+                let _ = sqlx::query!(
+                    "INSERT INTO ingestion_events (owner_kind, agent_id, repo, kind, status, detail)
+                     VALUES ('agent', $1, 'google_docs', 'status', 'done', 'No Google Docs found to ingest')",
+                    owner.id(),
+                )
+                .execute(&db)
+                .await;
+            }
+            Err(e) => {
+                tracing::warn!("google docs ingestion failed for {}: {e:?}", owner.id());
+                let _ = sqlx::query!(
+                    "INSERT INTO ingestion_events (owner_kind, agent_id, repo, kind, status, detail)
+                     VALUES ('agent', $1, 'google_docs', 'status', 'failed', $2)",
+                    owner.id(),
+                    format!("Google Docs ingestion failed: {e}"),
+                )
+                .execute(&db)
+                .await;
+            }
+        }
+    });
+
+    Ok(Json(serde_json::json!({ "started": true })))
 }
 
 #[derive(Serialize)]
@@ -661,8 +785,12 @@ async fn lora_complete(
     .is_some();
 
     if !claimed {
-        tracing::info!("RunPod webhook for agent {agent_id} ignored (already claimed by a prior callback)");
-        return Ok(Json(serde_json::json!({ "ok": true, "deduplicated": true })));
+        tracing::info!(
+            "RunPod webhook for agent {agent_id} ignored (already claimed by a prior callback)"
+        );
+        return Ok(Json(
+            serde_json::json!({ "ok": true, "deduplicated": true }),
+        ));
     }
 
     // Now do the best-effort CF upload + persist the finetune id. The agent is ALREADY ready, so
@@ -671,7 +799,9 @@ async fn lora_complete(
         crate::services::lora_training::handle_training_complete(&state.db, agent_id, adapter_key)
             .await
     {
-        tracing::error!("CF upload failed for agent {agent_id} (agent already marked ready): {e:?}");
+        tracing::error!(
+            "CF upload failed for agent {agent_id} (agent already marked ready): {e:?}"
+        );
     }
 
     // Notify the owner — best-effort. If this errors (e.g. duplicate notification from a

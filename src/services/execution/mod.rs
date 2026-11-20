@@ -78,6 +78,107 @@ impl ExecutionBackends {
     }
 }
 
+/// Fetch and decrypt the professional's own Anthropic API key for an agent, for use in a
+/// `TaskBrief`. Returns `None` when no key is on file. A decrypt failure is logged and treated as
+/// "no key" rather than failing the run (a bad key on file should surface as the Managed
+/// "add your key" skip, not a hard error).
+pub async fn agent_anthropic_key(db: &PgPool, agent_id: Uuid) -> Option<String> {
+    let enc = sqlx::query_scalar!(
+        "SELECT anthropic_api_key_enc FROM agents WHERE id = $1",
+        agent_id
+    )
+    .fetch_optional(db)
+    .await
+    .ok()
+    .flatten()
+    .flatten()?;
+    match crate::services::crypto::decrypt(&enc) {
+        Ok(key) if !key.trim().is_empty() => Some(key),
+        Ok(_) => None,
+        Err(e) => {
+            tracing::warn!(
+                "failed to decrypt Anthropic key for agent {}: {}",
+                agent_id,
+                e
+            );
+            None
+        }
+    }
+}
+
+/// The optimizer-edge credentials a fbx-agent run uses. Resolved from the agent's own key when on
+/// file, else the server key; the base URL comes from server config. `provider_key` stays `None`
+/// so the optimizer resolves the upstream provider key server/tenant-side (the onboarding /
+/// BYOK-held-tenant-side path), which keeps the sprite from needing a custom header.
+#[derive(Debug, Clone, Default)]
+pub struct OptimizerCreds {
+    pub base_url: Option<String>,
+    pub key: Option<String>,
+    pub provider_key: Option<String>,
+}
+
+/// Resolve the optimizer creds for an agent's fbx-agent run. Base URL from `OPTIMIZER_BASE_URL`;
+/// key from the agent's encrypted `optimizer_api_key_enc`, else the server `OPTIMIZER_API_KEY`.
+pub async fn agent_optimizer_creds(db: &PgPool, agent_id: Uuid) -> OptimizerCreds {
+    // Mirrors `agent_anthropic_key`: bind the decrypted key to a concrete `String` (so the offline
+    // sqlx build has an unambiguous type — a chained `.and_then(|enc| decrypt(&enc))` fails under
+    // SQLX_OFFLINE with an unsized-`str` error).
+    let agent_key = decrypt_agent_optimizer_key(db, agent_id).await;
+
+    OptimizerCreds {
+        base_url: std::env::var("OPTIMIZER_BASE_URL")
+            .ok()
+            .filter(|s| !s.is_empty()),
+        key: agent_key.or_else(|| {
+            std::env::var("OPTIMIZER_API_KEY")
+                .ok()
+                .filter(|s| !s.is_empty())
+        }),
+        provider_key: None,
+    }
+}
+
+/// Fetch + decrypt an agent's own optimizer key, or `None` if not on file / undecryptable. Kept as
+/// its own fn (with an explicit `String` binding) so the `query_scalar!` type is unambiguous under
+/// `SQLX_OFFLINE` — the same shape as `agent_anthropic_key`.
+async fn decrypt_agent_optimizer_key(db: &PgPool, agent_id: Uuid) -> Option<String> {
+    let enc: String = sqlx::query_scalar!(
+        "SELECT optimizer_api_key_enc FROM agents WHERE id = $1",
+        agent_id
+    )
+    .fetch_optional(db)
+    .await
+    .ok()
+    .flatten()
+    .flatten()?;
+    match crate::services::crypto::decrypt(&enc) {
+        Ok(k) if !k.trim().is_empty() => Some(k),
+        Ok(_) => None,
+        Err(e) => {
+            tracing::warn!(
+                "failed to decrypt optimizer key for agent {}: {}",
+                agent_id,
+                e
+            );
+            None
+        }
+    }
+}
+
+/// Server-level optimizer creds (env only, no per-agent key). For runs with no owning agent —
+/// e.g. a company-vault ingestion — that still route through the optimizer on the platform's key.
+pub fn server_optimizer_creds() -> OptimizerCreds {
+    OptimizerCreds {
+        base_url: std::env::var("OPTIMIZER_BASE_URL")
+            .ok()
+            .filter(|s| !s.is_empty()),
+        key: std::env::var("OPTIMIZER_API_KEY")
+            .ok()
+            .filter(|s| !s.is_empty()),
+        provider_key: None,
+    }
+}
+
 /// Which backend runs a task's work, and (for Sprite) which agent runtime drives it.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -111,11 +212,72 @@ pub enum AgentRuntimeKind {
     ClaudeCode,
     Codex,
     Custom,
+    /// flaborful's own DAG-aware coding orchestrator (`fbx-agent`), which routes every LLM call
+    /// through the optimizer edge. Serializes as `fbx_agent`.
+    FbxAgent,
 }
 
 impl Default for AgentRuntimeKind {
     fn default() -> Self {
-        AgentRuntimeKind::ClaudeCode
+        // The platform default coding agent is fbx-agent — flaborful's own DAG-aware orchestrator,
+        // routing every LLM call through the optimizer (the cheap, first-class path). Claude Code /
+        // Codex are opt-in alternatives.
+        AgentRuntimeKind::FbxAgent
+    }
+}
+
+impl AgentRuntimeKind {
+    pub fn from_str_opt(s: &str) -> Option<Self> {
+        match s {
+            "claude_code" => Some(Self::ClaudeCode),
+            "codex" => Some(Self::Codex),
+            "custom" => Some(Self::Custom),
+            "fbx_agent" => Some(Self::FbxAgent),
+            _ => None,
+        }
+    }
+}
+
+/// A user-facing **execution environment** for a SWE workflow node — the single choice a workflow
+/// author makes that bundles "where the work runs" (backend) with "which coding agent drives it"
+/// (runtime). Resolved node-override → workflow-default → agent-default, and mapped to the concrete
+/// `(backend, runtime)` the engine already understands. Keeps every path a first-class option:
+/// the premium managed cloud, strict-BYOK Claude Code, and the cheap optimizer-routed fbx-agent.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionEnvironment {
+    /// Anthropic-hosted Managed Agents (their key). The premium path.
+    ManagedCloud,
+    /// Sprite + Claude Code, strictly on the professional's Anthropic key (no optimizer routing).
+    ClaudeCodeByok,
+    /// Sprite + fbx-agent, routing every LLM call through the optimizer edge (the cheap default).
+    OptimizerFbx,
+}
+
+impl ExecutionEnvironment {
+    pub fn from_str_opt(s: &str) -> Option<Self> {
+        match s {
+            "managed_cloud" => Some(Self::ManagedCloud),
+            "claude_code_byok" => Some(Self::ClaudeCodeByok),
+            "optimizer_fbx" => Some(Self::OptimizerFbx),
+            _ => None,
+        }
+    }
+
+    /// The concrete backend + (Sprite-only) runtime this environment maps to. The managed path has
+    /// no coding-agent runtime (Anthropic's own agent drives it), hence `None`.
+    pub fn resolve(self) -> (ExecutionBackendKind, Option<AgentRuntimeKind>) {
+        match self {
+            Self::ManagedCloud => (ExecutionBackendKind::Managed, None),
+            Self::ClaudeCodeByok => (
+                ExecutionBackendKind::Sprite,
+                Some(AgentRuntimeKind::ClaudeCode),
+            ),
+            Self::OptimizerFbx => (
+                ExecutionBackendKind::Sprite,
+                Some(AgentRuntimeKind::FbxAgent),
+            ),
+        }
     }
 }
 
@@ -156,10 +318,71 @@ pub struct TaskBrief {
     /// GitHub access token (owner OAuth) for clone/push. For Managed Agents this rides the
     /// git proxy and never enters the container.
     pub github_token: Option<String>,
+    /// The professional's own (decrypted) Anthropic/Claude API key. Required by the Managed
+    /// backend (no fallback — the run bills to the professional). The Sprite backend prefers it
+    /// and falls back to the server's `ANTHROPIC_API_KEY`. `None`/empty => not on file.
+    pub anthropic_api_key: Option<String>,
     /// Per-task token authenticating the agent's calls back to the shared taste endpoint.
     pub taste_token: String,
     /// Base URL of this backend (for building the taste callback URL).
     pub api_base_url: String,
+    /// The concrete model id the runtime should drive the coding agent with. `None` => the
+    /// runtime picks its per-`TaskKind` default (see `default_model`). Lets a high-volume,
+    /// lower-stakes documentation (`Ingest`) run use a cheaper model than a hard `Implement`
+    /// run, instead of every run hardcoding a frontier model.
+    pub model: Option<String>,
+    /// Optimizer edge base URL for the fbx-agent runtime (e.g. `https://optimizer…/v1`). When set,
+    /// fbx-agent routes every LLM call through the optimizer (route/cache/quality-gate/meter).
+    /// `None` => not configured (the fbx runtime falls back to the server env `OPTIMIZER_BASE_URL`).
+    pub optimizer_base_url: Option<String>,
+    /// The optimizer API key (`sk-opt-…`) authenticating the tenant at the edge. Prefer the
+    /// professional's own; fall back to the server key. Only used by the fbx-agent runtime.
+    pub optimizer_key: Option<String>,
+    /// Optional upstream provider key passed through in `x-provider-key`. `None` when the optimizer
+    /// resolves the provider key server/tenant-side (the onboarding / BYOK-held-tenant-side path).
+    pub provider_key: Option<String>,
+    /// Upstream workflow inputs for this node's step (the DAG blackboard vars the fbx-agent runtime
+    /// injects with the task). `Null` when there are none. Only the fbx-agent runtime consumes this.
+    pub vars: serde_json::Value,
+    /// Per-node coding-agent runtime override (Sprite backend). When `Some`, the Sprite backend uses
+    /// this instead of the agent-row default — so a workflow can pick the execution environment
+    /// per node. `None` => fall back to the agent's configured `agent_runtime`.
+    pub runtime_override: Option<AgentRuntimeKind>,
+}
+
+/// The default coding model for a run kind, when the brief doesn't pin one. Frontier for
+/// `Implement` (hard multi-step SWE), cheap for `Ingest` (read-only documentation into the
+/// vault — high volume, quality-tolerant). Both are env-overridable so ops can tune the
+/// model without a redeploy, mirroring `ORCHESTRATOR_MODEL`/`WORKER_MODEL` in `inference.rs`.
+pub fn default_model(kind: TaskKind) -> String {
+    match kind {
+        TaskKind::Implement => {
+            std::env::var("FLABORFUL_MODEL_IMPLEMENT").unwrap_or_else(|_| "claude-opus-4-8".into())
+        }
+        TaskKind::Ingest => {
+            std::env::var("FLABORFUL_MODEL_INGEST").unwrap_or_else(|_| "claude-haiku-4-5".into())
+        }
+    }
+}
+
+/// The default model for the **fbx-agent** runtime specifically. Unlike `default_model` (whose ids
+/// feed Claude Code's `ANTHROPIC_MODEL` and so must be real Anthropic ids), fbx-agent routes every
+/// call through the **optimizer edge** as an OpenAI-style tool-calling agent — so its pinned model
+/// MUST be a provider the edge can serve tools through. The edge's Anthropic provider does NOT
+/// translate OpenAI tool messages (it 400s on `role:"tool"`), so a `claude-*` pin here guarantees a
+/// tool-call failure. Pin **OpenAI tool-capable** ids instead: the edge's `owner_of` routes `gpt-*`
+/// to the OpenAiCompat provider (correct tool handling), then the resilience chain falls back to
+/// Ollama, etc. Env overrides mirror `default_model`. (Likeness lane is untouched — it never routes
+/// here.)
+pub fn fbx_default_model(kind: TaskKind) -> String {
+    match kind {
+        TaskKind::Implement => {
+            std::env::var("FLABORFUL_MODEL_IMPLEMENT").unwrap_or_else(|_| "gpt-5.4".into())
+        }
+        TaskKind::Ingest => {
+            std::env::var("FLABORFUL_MODEL_INGEST").unwrap_or_else(|_| "gpt-5.4-mini".into())
+        }
+    }
 }
 
 impl TaskBrief {
@@ -201,6 +424,11 @@ pub struct ExecResult {
     pub head_sha: Option<String>,
     /// completed | failed
     pub status: String,
+    /// Optimizer cost/savings for this run (only the fbx-agent runtime emits it — every LLM call
+    /// went through the edge). `{ baseline, actual, served, exploration, saved, cache_hits, llm_calls }`.
+    /// `None` for runtimes that don't route through the optimizer. Surfaced on the node/run in the UI.
+    #[serde(default)]
+    pub cost: Option<serde_json::Value>,
 }
 
 /// A sink the backend writes transcript chunks to as the agent works, so the DAG inspector can
@@ -229,4 +457,77 @@ pub trait ExecutionBackend: Send + Sync {
         brief: &TaskBrief,
         sink: &dyn TranscriptSink,
     ) -> Result<ExecResult>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{default_model, fbx_default_model, TaskKind};
+
+    // One test, run serially, because these read process-global env vars — splitting
+    // it would let parallel tests race on the same vars.
+    #[test]
+    fn default_model_defaults_and_env_overrides() {
+        // Built-in defaults: documentation runs don't default to the frontier model.
+        std::env::remove_var("FLABORFUL_MODEL_IMPLEMENT");
+        std::env::remove_var("FLABORFUL_MODEL_INGEST");
+        let implement = default_model(TaskKind::Implement);
+        let ingest = default_model(TaskKind::Ingest);
+        assert_ne!(implement, ingest);
+        assert_eq!(implement, "claude-opus-4-8");
+        assert_eq!(ingest, "claude-haiku-4-5");
+
+        // fbx-agent routes through the optimizer edge as an OpenAI-style tool-calling agent, so its
+        // defaults must be OpenAI tool-capable ids (a `claude-*` pin would 400 on tool messages).
+        let fbx_implement = fbx_default_model(TaskKind::Implement);
+        let fbx_ingest = fbx_default_model(TaskKind::Ingest);
+        assert!(
+            fbx_implement.starts_with("gpt-"),
+            "fbx implement must be an OpenAI id"
+        );
+        assert!(
+            fbx_ingest.starts_with("gpt-"),
+            "fbx ingest must be an OpenAI id"
+        );
+        assert_ne!(fbx_implement, fbx_ingest);
+
+        // Env overrides win (shared with `default_model` — same env vars).
+        std::env::set_var("FLABORFUL_MODEL_INGEST", "some-cheap-model");
+        assert_eq!(default_model(TaskKind::Ingest), "some-cheap-model");
+        assert_eq!(fbx_default_model(TaskKind::Ingest), "some-cheap-model");
+        std::env::remove_var("FLABORFUL_MODEL_INGEST");
+    }
+
+    #[test]
+    fn execution_environment_maps_to_backend_and_runtime() {
+        use super::{AgentRuntimeKind, ExecutionBackendKind, ExecutionEnvironment};
+
+        // Managed cloud → Managed backend, no coding runtime (Anthropic's agent drives it).
+        assert_eq!(
+            ExecutionEnvironment::ManagedCloud.resolve(),
+            (ExecutionBackendKind::Managed, None)
+        );
+        // Claude Code BYOK → Sprite + ClaudeCode.
+        assert_eq!(
+            ExecutionEnvironment::ClaudeCodeByok.resolve(),
+            (
+                ExecutionBackendKind::Sprite,
+                Some(AgentRuntimeKind::ClaudeCode)
+            )
+        );
+        // Optimizer fbx → Sprite + FbxAgent.
+        assert_eq!(
+            ExecutionEnvironment::OptimizerFbx.resolve(),
+            (
+                ExecutionBackendKind::Sprite,
+                Some(AgentRuntimeKind::FbxAgent)
+            )
+        );
+
+        // String parsing round-trips the selector values; unknown => None.
+        assert_eq!(
+            ExecutionEnvironment::from_str_opt("optimizer_fbx"),
+            Some(ExecutionEnvironment::OptimizerFbx)
+        );
+        assert_eq!(ExecutionEnvironment::from_str_opt("nope"), None);
+    }
 }

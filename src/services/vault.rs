@@ -40,6 +40,11 @@ pub enum NoteLayer {
     Pattern,
     /// A technology/stack note linking the repos/features that use it.
     Tech,
+    /// A reusable procedural playbook (Gumloop-style Skill): a `SKILL.md` with a `when_to_use`
+    /// description + steps. Loaded on-demand into the Execution Blueprint when the task matches,
+    /// so descriptions stay cheap and full instructions load only when relevant. Human- and
+    /// agent-authored. See [[Flaborful Skills]].
+    Skill,
     /// Anything else (the default; backfilled chunks, rolling memory).
     Note,
 }
@@ -53,6 +58,7 @@ impl NoteLayer {
             NoteLayer::Feature => "feature",
             NoteLayer::Pattern => "pattern",
             NoteLayer::Tech => "tech",
+            NoteLayer::Skill => "skill",
             NoteLayer::Note => "note",
         }
     }
@@ -65,6 +71,7 @@ impl NoteLayer {
             "feature" => NoteLayer::Feature,
             "pattern" => NoteLayer::Pattern,
             "tech" => NoteLayer::Tech,
+            "skill" => NoteLayer::Skill,
             _ => NoteLayer::Note,
         }
     }
@@ -328,8 +335,19 @@ pub async fn get_note(db: &PgPool, owner: VaultOwner, slug: &str) -> Result<Opti
     .await?;
     Ok(row.map(|r| {
         note_from_row(
-            r.id, r.owner_kind, r.agent_id, r.slug, r.title, r.body, r.layer, r.source_type,
-            r.visibility, r.domain, r.related, r.repo, r.job_id,
+            r.id,
+            r.owner_kind,
+            r.agent_id,
+            r.slug,
+            r.title,
+            r.body,
+            r.layer,
+            r.source_type,
+            r.visibility,
+            r.domain,
+            r.related,
+            r.repo,
+            r.job_id,
         )
     }))
 }
@@ -348,8 +366,19 @@ pub async fn list_notes_for_owner(db: &PgPool, owner: VaultOwner) -> Result<Vec<
         .into_iter()
         .map(|r| {
             note_from_row(
-                r.id, r.owner_kind, r.agent_id, r.slug, r.title, r.body, r.layer, r.source_type,
-                r.visibility, r.domain, r.related, r.repo, r.job_id,
+                r.id,
+                r.owner_kind,
+                r.agent_id,
+                r.slug,
+                r.title,
+                r.body,
+                r.layer,
+                r.source_type,
+                r.visibility,
+                r.domain,
+                r.related,
+                r.repo,
+                r.job_id,
             )
         })
         .collect())
@@ -373,7 +402,12 @@ pub async fn notes_by_slugs(
 }
 
 /// Delete a note (source of truth), its derived chunk, and log a timeline event.
-pub async fn delete_note(db: &PgPool, qdrant: &Qdrant, owner: VaultOwner, slug: &str) -> Result<()> {
+pub async fn delete_note(
+    db: &PgPool,
+    qdrant: &Qdrant,
+    owner: VaultOwner,
+    slug: &str,
+) -> Result<()> {
     let Some(note) = get_note(db, owner, slug).await? else {
         return Ok(());
     };
@@ -506,9 +540,15 @@ pub async fn retrieve(
     // Semantic half (vector). Over-fetch so post-filtering still yields k.
     let embeddings = inference.embed(vec![query.to_string()]).await?;
     if let Some(qv) = embeddings.into_iter().next() {
-        let chunks =
-            knowledge::search_chunks(qdrant, qv, owner.kind_str(), owner.id(), (k * 3) as u64, 0.5)
-                .await?;
+        let chunks = knowledge::search_chunks(
+            qdrant,
+            qv,
+            owner.kind_str(),
+            owner.id(),
+            (k * 3) as u64,
+            0.5,
+        )
+        .await?;
         // Qdrant returns in descending similarity; approximate a rank-decay score.
         for (rank, c) in chunks.iter().enumerate() {
             let s = 0.70 * (1.0 - (rank as f32) / (chunks.len().max(1) as f32));
@@ -1026,7 +1066,58 @@ pub async fn handle_tool(
             let dest = overlays.first().map(|o| o.owner).unwrap_or(owner);
             let note = note_from_args(db, dest, &slug, args).await?;
             upsert_note(db, qdrant, inference, note).await?;
-            Ok(format!("Recorded technical note '{slug}' in the company vault."))
+            Ok(format!(
+                "Recorded technical note '{slug}' in the company vault."
+            ))
+        }
+        // Skill: a reusable procedural playbook the agent authors from a task it just did well.
+        // Always a Skill-layer note in the professional's own vault. The `when_to_use` arg becomes
+        // the searchable description (so it's matched on-demand into future blueprints), and `body`
+        // holds the step-by-step instructions. New skills default to Shareable — a skill is
+        // procedure, not proprietary code — so it can compose across the professional's work.
+        "write_skill" => {
+            let slug = str_arg("slug").ok_or_else(|| anyhow!("write_skill: 'slug' required"))?;
+            let body = str_arg("body").ok_or_else(|| anyhow!("write_skill: 'body' required"))?;
+            let title = str_arg("title").unwrap_or_else(|| slug.clone());
+            let when_to_use = str_arg("when_to_use").unwrap_or_default();
+            let related: Vec<String> = args
+                .get("related")
+                .and_then(|v| v.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default();
+            // Prepend when_to_use so it's in the note body (indexed for retrieval) as the
+            // description, mirroring a SKILL.md frontmatter `description`.
+            let full_body = if when_to_use.is_empty() {
+                body
+            } else {
+                format!("**When to use:** {when_to_use}\n\n{body}")
+            };
+            let existing = get_note(db, owner, &slug).await?;
+            let (id, visibility) = match &existing {
+                Some(n) => (n.id, n.visibility),
+                None => (Uuid::new_v4(), ChunkVisibility::Shareable),
+            };
+            let note = VaultNote {
+                id,
+                agent_id: owner.id(),
+                owner_kind: owner.kind_str().to_string(),
+                slug: slug.clone(),
+                title,
+                body: full_body,
+                layer: NoteLayer::Skill,
+                source_type: KnowledgeSourceType::ApprovedOutput,
+                visibility,
+                domain: str_arg("domain"),
+                related,
+                repo: None,
+                job_id: None,
+            };
+            upsert_note(db, qdrant, inference, note).await?;
+            Ok(format!("Saved skill '{slug}' to your vault."))
         }
         "list_vault" => {
             let layer = str_arg("layer").map(|s| NoteLayer::from_str(&s));

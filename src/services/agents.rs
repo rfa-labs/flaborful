@@ -25,6 +25,7 @@ pub async fn get_agent_by_professional(db: &PgPool, professional_id: Uuid) -> Ap
         .bind(professional_id)
         .fetch_optional(db)
         .await?
+        .map(Agent::with_key_flag)
         .ok_or_else(|| {
             AppError::NotFound(format!(
                 "Agent for professional {professional_id} not found"
@@ -37,6 +38,7 @@ pub async fn get_agent(db: &PgPool, id: Uuid) -> AppResult<Agent> {
         .bind(id)
         .fetch_optional(db)
         .await?
+        .map(Agent::with_key_flag)
         .ok_or_else(|| AppError::NotFound(format!("Agent {id} not found")))
 }
 

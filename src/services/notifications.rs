@@ -14,6 +14,8 @@ pub enum NotificationType {
     JobStarted,
     JobCompleted,
     AgentTrainingDone,
+    TaskEvaluationCritical,
+    AgentReflectionReady,
 }
 
 #[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
@@ -191,6 +193,59 @@ pub async fn notify_agent_ready(db: &PgPool, agent_id: Uuid) -> Result<()> {
 
     if let Some(uid) = user_id {
         notify_training_done(db, uid, agent_id).await?;
+    }
+    Ok(())
+}
+
+/// Resolve an agent's owning professional's user_id.
+pub async fn agent_owner_user_id(db: &PgPool, agent_id: Uuid) -> Result<Option<Uuid>> {
+    Ok(sqlx::query_scalar::<_, Uuid>(
+        r#"SELECT u.id FROM users u
+           JOIN professionals p ON p.user_id = u.id
+           JOIN agents a ON a.professional_id = p.id
+           WHERE a.id = $1"#,
+    )
+    .bind(agent_id)
+    .fetch_optional(db)
+    .await?)
+}
+
+/// Alert the agent's owner that a delivered task got a Critical evaluation grade.
+pub async fn notify_eval_critical(
+    db: &PgPool,
+    agent_id: Uuid,
+    task_id: Uuid,
+    summary: &str,
+) -> Result<()> {
+    if let Some(uid) = agent_owner_user_id(db, agent_id).await? {
+        create(
+            db,
+            uid,
+            NotificationType::TaskEvaluationCritical,
+            "A task output needs attention".to_string(),
+            format!("An evaluation flagged a delivered output as critical: {summary}"),
+            serde_json::json!({ "task_id": task_id, "agent_id": agent_id }),
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+/// Alert the agent's owner that a reflection cycle produced proposals to review.
+pub async fn notify_reflection_ready(db: &PgPool, agent_id: Uuid, count: usize) -> Result<()> {
+    if let Some(uid) = agent_owner_user_id(db, agent_id).await? {
+        create(
+            db,
+            uid,
+            NotificationType::AgentReflectionReady,
+            "Your agent has suggestions".to_string(),
+            format!(
+                "A reflection found {count} improvement{} for your review.",
+                if count == 1 { "" } else { "s" }
+            ),
+            serde_json::json!({ "agent_id": agent_id, "count": count }),
+        )
+        .await?;
     }
     Ok(())
 }

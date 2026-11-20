@@ -3,7 +3,7 @@
   import { goto } from '$app/navigation';
   import { page } from '$app/stores';
   import { api } from '$lib/api/client';
-  import { session } from '$lib/stores/session';
+  import { session, getToken } from '$lib/stores/session';
   import IngestionProgress from '$lib/components/IngestionProgress.svelte';
 
   let step = 1; // 1=Identity, 2=Knowledge, 3=Interview
@@ -31,6 +31,66 @@
   // its completion (via the live IngestionProgress feed) so we can gate "Start interview" — LoRA
   // trains from the vault, so it should be built first.
   let ingestionComplete = false;
+  // Bumped on every ingest kickoff (initial + each "Build missing" / "Re-do from scratch"). Used as
+  // a Svelte {#key} to fully REMOUNT the IngestionProgress panel per run, so a re-run immediately
+  // re-seeds its snapshot and reopens the SSE feed instead of showing the previous run's stale
+  // "complete" state (which raced the fresh `running` event and left the panel frozen).
+  let runNonce = 0;
+
+  // Repo picker — the user chooses which of their GitHub repos to document into the vault. Loaded
+  // from their connected token once GitHub is connected. `selectedRepos` holds full_name strings.
+  interface RepoOption { full_name: string; private: boolean; default_branch: string; }
+  let repos: RepoOption[] = [];
+  let reposLoading = false;
+  let reposError = '';
+  let selectedRepos = new Set<string>();
+
+  async function loadRepos() {
+    reposLoading = true; reposError = '';
+    try {
+      const list = await api.get<RepoOption[]>('/auth/connections/github/repos');
+      repos = list;
+      // Default to ALL repos selected — the user deselects the ones they don't want documented.
+      selectedRepos = new Set(list.map((r) => r.full_name));
+    } catch (e: unknown) {
+      reposError = e instanceof Error ? e.message : 'Failed to load your GitHub repos';
+    } finally {
+      reposLoading = false;
+    }
+  }
+
+  function toggleRepo(fullName: string) {
+    if (selectedRepos.has(fullName)) selectedRepos.delete(fullName);
+    else selectedRepos.add(fullName);
+    selectedRepos = selectedRepos; // reassign so Svelte reacts to the Set mutation
+  }
+
+  // Select-all / deselect-all shortcut for the picker header. When everything is already selected,
+  // this clears the selection so the user can hand-pick a few; otherwise it selects everything.
+  function toggleAllRepos() {
+    selectedRepos = selectedRepos.size === repos.length
+      ? new Set()
+      : new Set(repos.map((r) => r.full_name));
+  }
+
+  // Optional BYO Anthropic key. Never required — ingestion runs on Sprite with the platform key.
+  // Offered here so a user who wants their own work billed to their own key can add it up front.
+  let anthropicKey = '';
+  let savingKey = false;
+  let keySaved = false;
+  async function saveAnthropicKey() {
+    if (!anthropicKey.trim() || !agentId) return;
+    savingKey = true; error = '';
+    try {
+      await api.patch(`/agents/${agentId}/anthropic-key`, { anthropic_api_key: anthropicKey.trim() });
+      keySaved = true;
+      anthropicKey = '';
+    } catch (e: unknown) {
+      error = e instanceof Error ? e.message : 'Failed to save key';
+    } finally {
+      savingKey = false;
+    }
+  }
 
   onMount(() => {
     const params = $page.url.searchParams;
@@ -49,7 +109,9 @@
       if (login) githubLogin = decodeURIComponent(login);
       githubConnected = true;
       step = 2;
-      triggerIngest();
+      // Don't auto-ingest — load the user's repos so they can pick which to document. They kick
+      // off ingestion explicitly with the "Build knowledge vault" button once they've chosen.
+      loadRepos();
       return;
     }
 
@@ -70,6 +132,7 @@
         .then((conns) => {
           const gh = conns.find((c) => c.provider === 'github');
           if (gh) { githubConnected = true; githubLogin = gh.external_account; ingestDone = true; }
+          if (conns.some((c) => c.provider === 'google')) googleConnected = true;
         })
         .catch(() => { /* non-blocking */ });
       return;
@@ -164,12 +227,73 @@
       ingestResult = await api.post<typeof ingestResult>('/onboarding/github/ingest', {
         agent_id: agentId,
         force,
+        // The repos the user picked, each with its authoritative default branch. Empty => backend
+        // falls back to the fetched profile's repos.
+        repos: repos
+          .filter((r) => selectedRepos.has(r.full_name))
+          .map((r) => ({ full_name: r.full_name, branch: r.default_branch })),
       });
       ingestDone = true;
+      // A new run started server-side (prior events were cleared): reset completion gating and
+      // remount the progress panel so it reflects THIS run from the first event, not the last one.
+      ingestionComplete = false;
+      runNonce += 1;
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'GitHub ingestion failed';
     } finally {
       submitting = false;
+    }
+  }
+
+  // ── Step 2: additional (non-code) likeness sources ────────────────────────
+  // Google Docs: connect Google, then ingest the professional's own docs into the vault.
+  let googleConnected = false;
+  let googleBusy = false;
+  async function connectGoogleDocs() {
+    googleBusy = true; error = '';
+    try {
+      if (!googleConnected) {
+        const res = await api.get<{ url: string }>(`/auth/google/start?agent_id=${agentId}`);
+        window.location.href = res.url;
+        return;
+      }
+      await api.post('/onboarding/google-docs/ingest', { agent_id: agentId });
+      // Progress streams into the same IngestionProgress feed (source label "google_docs").
+      ingestDone = true;
+    } catch (e: unknown) {
+      error = e instanceof Error ? e.message : 'Google Docs ingestion failed';
+    } finally {
+      googleBusy = false;
+    }
+  }
+
+  // Portfolio/resume file upload → distilled into a vault note.
+  let uploading = false;
+  let uploadMsg = '';
+  async function uploadPortfolio(e: Event) {
+    const input = e.target as HTMLInputElement;
+    const file = input.files?.[0];
+    if (!file) return;
+    uploading = true; error = ''; uploadMsg = '';
+    try {
+      const form = new FormData();
+      form.append('file', file);
+      // FormData needs a raw fetch (the api helper sets JSON content-type).
+      const token = getToken();
+      const res = await fetch(`/api/v1/knowledge/agent/${agentId}/portfolio`, {
+        method: 'POST',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        body: form,
+      });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? 'Upload failed');
+      const out = await res.json();
+      uploadMsg = `Added ${out.notes_written ?? 0} note from “${file.name}”.`;
+      ingestDone = true;
+    } catch (err: unknown) {
+      error = err instanceof Error ? err.message : 'Upload failed';
+    } finally {
+      uploading = false;
+      input.value = '';
     }
   }
 
@@ -339,9 +463,86 @@
           {/if}
 
           {#if githubConnected && !submitting}
-            <button class="btn-primary w-full py-3" on:click={() => triggerIngest(false)}>
-              Build knowledge vault from my repos →
+            <!-- Repo picker — choose which repos to document into your vault. -->
+            <div class="border border-sand-200 rounded-lg overflow-hidden">
+              <div class="flex items-center justify-between px-4 py-2.5 bg-sand-50 border-b border-sand-100">
+                <span class="text-xs font-semibold text-sand-600">
+                  Choose repositories to document
+                  {#if selectedRepos.size > 0}<span class="text-sand-400 font-normal">· {selectedRepos.size} selected</span>{/if}
+                </span>
+                <div class="flex items-center gap-3">
+                  {#if repos.length > 0 && !reposLoading}
+                    <button class="btn-ghost text-xs" on:click={toggleAllRepos}>
+                      {selectedRepos.size === repos.length ? 'Deselect all' : 'Select all'}
+                    </button>
+                  {/if}
+                  <button class="btn-ghost text-xs" on:click={loadRepos} disabled={reposLoading}>
+                    {reposLoading ? 'Loading…' : 'Refresh'}
+                  </button>
+                </div>
+              </div>
+              {#if reposError}
+                <p class="px-4 py-3 text-sm text-sand-400">{reposError}</p>
+              {:else if reposLoading}
+                <p class="px-4 py-3 text-sm text-sand-400 animate-pulse">Loading your GitHub repos…</p>
+              {:else if repos.length === 0}
+                <p class="px-4 py-3 text-sm text-sand-400">No repos found.</p>
+              {:else}
+                <ul class="max-h-72 overflow-y-auto divide-y divide-sand-100">
+                  {#each repos as r (r.full_name)}
+                    <li>
+                      <label class="flex items-center gap-3 px-4 py-2.5 cursor-pointer hover:bg-sand-50">
+                        <input
+                          type="checkbox"
+                          class="shrink-0"
+                          checked={selectedRepos.has(r.full_name)}
+                          on:change={() => toggleRepo(r.full_name)}
+                        />
+                        <span class="text-sm font-mono text-sand-800 truncate flex-1">{r.full_name}</span>
+                        {#if r.private}<span class="badge text-[10px] text-sand-400">private</span>{/if}
+                        <span class="text-[10px] text-sand-400">{r.default_branch}</span>
+                      </label>
+                    </li>
+                  {/each}
+                </ul>
+              {/if}
+            </div>
+
+            <button
+              class="btn-primary w-full py-3"
+              disabled={selectedRepos.size === 0}
+              on:click={() => triggerIngest(false)}
+            >
+              Build knowledge vault from {selectedRepos.size || 'my'} repo{selectedRepos.size === 1 ? '' : 's'} →
             </button>
+
+            <!-- Optional: bring your own Anthropic key. Never required. -->
+            {#if !keySaved}
+              <details class="border border-sand-100 rounded-lg px-4 py-3">
+                <summary class="text-xs font-semibold text-sand-600 cursor-pointer">
+                  Use your own Anthropic API key? <span class="font-normal text-sand-400">(optional)</span>
+                </summary>
+                <p class="text-xs text-sand-500 mt-2 mb-2.5">
+                  Your vault builds on us either way — no key needed to get started. Add your own key
+                  if you'd like your agent's actual work billed to your Anthropic account.
+                </p>
+                <div class="flex items-center gap-2">
+                  <input
+                    type="password"
+                    bind:value={anthropicKey}
+                    placeholder="sk-ant-…"
+                    class="flex-1 border border-sand-200 rounded-md px-3 py-2 text-sm font-mono"
+                  />
+                  <button class="btn-secondary text-xs" disabled={!anthropicKey.trim() || savingKey} on:click={saveAnthropicKey}>
+                    {savingKey ? 'Saving…' : 'Save key'}
+                  </button>
+                </div>
+              </details>
+            {:else}
+              <div class="text-xs text-green-700 bg-green-50 rounded-lg px-4 py-2.5">
+                ✓ Your Anthropic key is saved — your agent's work will bill to your account.
+              </div>
+            {/if}
           {/if}
 
           {#if submitting && githubConnected}
@@ -373,9 +574,12 @@
           </div>
         {/if}
 
-        <!-- Live progress of the agentic repo→vault documentation (the deep knowledge base). -->
+        <!-- Live progress of the agentic repo→vault documentation (the deep knowledge base).
+             Keyed on runNonce so each re-run remounts it (fresh snapshot + SSE feed). -->
         <div class="border-t border-sand-100 pt-5 mt-5">
-          <IngestionProgress {agentId} on:complete={() => (ingestionComplete = true)} />
+          {#key runNonce}
+            <IngestionProgress {agentId} on:complete={() => (ingestionComplete = true)} />
+          {/key}
           <div class="flex items-center gap-3 mt-3">
             <button class="btn-ghost text-sm" disabled={submitting} on:click={() => triggerIngest(false)}>
               ↻ Build missing repos
@@ -386,6 +590,34 @@
           </div>
         </div>
       {/if}
+
+      <!-- More sources — ingest likeness beyond code (for any profession). -->
+      <div class="border-t border-sand-100 pt-5 mt-6">
+        <div class="text-sm font-semibold text-sand-700 mb-1">More sources</div>
+        <p class="text-xs text-sand-500 mb-3">Not just code — bring in the documents that show how you work.</p>
+        <div class="grid sm:grid-cols-2 gap-3">
+          <!-- Google Docs -->
+          <button class="border border-sand-200 rounded-lg px-4 py-3 text-left hover:border-brand-400 transition-colors flex items-center gap-3"
+            disabled={googleBusy} on:click={connectGoogleDocs}>
+            <svg class="w-5 h-5 shrink-0" viewBox="0 0 24 24"><path fill="#4285F4" d="M14.727 6.727H14V0H4.91c-.905 0-1.637.732-1.637 1.636v20.728c0 .904.732 1.636 1.636 1.636h14.182c.904 0 1.636-.732 1.636-1.636V6.727h-6.545z"/><path fill="#fff" d="M7 12h10v1H7zm0 3h10v1H7zm0-6h5v1H7z"/></svg>
+            <span>
+              <span class="block text-sm font-medium text-sand-800">Google Docs</span>
+              <span class="block text-xs text-sand-400">{googleBusy ? 'Working…' : googleConnected ? 'Ingest my docs' : 'Connect & ingest'}</span>
+            </span>
+          </button>
+
+          <!-- Portfolio / resume file -->
+          <label class="border border-sand-200 rounded-lg px-4 py-3 text-left hover:border-brand-400 transition-colors flex items-center gap-3 cursor-pointer">
+            <span class="text-lg shrink-0">📄</span>
+            <span class="min-w-0">
+              <span class="block text-sm font-medium text-sand-800">Upload a file</span>
+              <span class="block text-xs text-sand-400 truncate">{uploading ? 'Reading…' : 'PDF, txt, or markdown'}</span>
+            </span>
+            <input type="file" class="hidden" accept=".pdf,.txt,.md,.markdown" on:change={uploadPortfolio} disabled={uploading} />
+          </label>
+        </div>
+        {#if uploadMsg}<p class="text-xs text-green-700 mt-2">{uploadMsg}</p>{/if}
+      </div>
 
       {#if error}<div class="text-red-600 text-sm bg-red-50 rounded-lg px-3 py-2 mt-4">{error}</div>{/if}
 

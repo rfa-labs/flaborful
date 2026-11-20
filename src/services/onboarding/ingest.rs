@@ -104,8 +104,11 @@ impl IngestionSink {
     }
 
     /// Emit a per-repo lifecycle status row (running | done | failed) carrying the running
-    /// event tally as `notes_count`.
+    /// event tally as `notes_count`. Also mirrored to the server logs — the transcript otherwise
+    /// only lands in `ingestion_events` (for the SSE feed), so without this a run in flight is
+    /// invisible in `tracing` output whenever the UI feed is unavailable.
     async fn status(&self, status: &str, detail: &str) {
+        tracing::info!(owner = %self.owner_id, repo = %self.repo, status, "ingestion: {detail}");
         self.record("status", Some(status), detail, self.notes_count())
             .await;
     }
@@ -113,6 +116,7 @@ impl IngestionSink {
     /// Emit a status row with an explicit, authoritative note count. Used for `done`, where the
     /// number must reflect distinct vault rows (the event tally double-counts on retries/reruns).
     async fn status_with_count(&self, status: &str, detail: &str, count: i32) {
+        tracing::info!(owner = %self.owner_id, repo = %self.repo, status, notes = count, "ingestion: {detail}");
         self.record("status", Some(status), detail, count).await;
     }
 
@@ -135,17 +139,52 @@ impl IngestionSink {
 #[async_trait::async_trait]
 impl TranscriptSink for IngestionSink {
     async fn push(&self, chunk: &str) {
-        // The managed backend prefixes vault-tool results with the tool name, e.g.
-        // "[upsert_note] → ...". Count those as notes written and tag the event so the UI can
-        // distinguish a note being created from generic transcript.
-        let is_note = chunk.starts_with("[upsert_note]");
-        let notes = if is_note {
-            self.notes.fetch_add(1, Ordering::Relaxed) + 1
-        } else {
-            self.notes_count()
-        };
-        let kind = if is_note { "note" } else { "message" };
-        self.record(kind, None, chunk, notes).await;
+        // The agent's raw transcript is a firehose: the Sprite backend calls push() once per
+        // WebSocket frame of stdout/stderr (hundreds–thousands per repo under stream-json). We do
+        // NOT persist it — a DB row per chunk is the scalability problem this table had. The
+        // transcript is instead surfaced live via the server logs, and progress reaches the UI as
+        // low-volume `running` status rows driven by the AUTHORITATIVE vault count (see the progress
+        // ticker in `ingest_repo`), not by parsing this stream.
+        //
+        // We still scan chunks for two things, both cheap and DB-free:
+        //  1. A note being written — bump the in-memory counter only (no row). Kept as a fast-path
+        //     hint; the persisted counts come from vault_note_count(), so a miss here can't corrupt
+        //     the result.
+        //  2. Terminal agent failures that arrive as ordinary transcript (the run still returns Ok)
+        //     — surface them to the server logs, since they'd otherwise be invisible. Most important:
+        //     "Credit balance is too low" (billing_error) and the checkout-failed abort.
+        let is_note =
+            chunk.starts_with("[upsert_note]") || chunk.contains("mcp__vault__upsert_note");
+        if is_note {
+            self.notes.fetch_add(1, Ordering::Relaxed);
+        }
+        if chunk.contains("billing_error")
+            || chunk.contains("Credit balance is too low")
+            || chunk.contains("INGEST_ABORT")
+        {
+            tracing::warn!(owner = %self.owner_id, repo = %self.repo, "ingestion agent error: {chunk}");
+        }
+
+        // Ingestion is diagnostically blind without this: the whole sprite run (creating/cloning/
+        // running the agent) and the agent's own transcript stream through push() and are otherwise
+        // dropped, so a silent 0-notes run leaves NOTHING in `tracing` explaining what happened
+        // (e.g. `command not found` when the runtime binary didn't install). Mirror a small whitelist
+        // of low-volume, high-signal lines to the server logs — NOT the token firehose:
+        //  - `[sprite] …` lifecycle breadcrumbs (creating / repo cloned / running coding agent / etc.)
+        //  - runtime install/invoke failures (`command not found`, `npm ERR`)
+        //  - the fbx-agent `===FBX_RESULT===` result envelope
+        let trimmed = chunk.trim_start();
+        let is_sprite_line = trimmed.starts_with("[sprite]");
+        let is_install_fail = chunk.contains("command not found") || chunk.contains("npm ERR");
+        let is_result_envelope =
+            chunk.contains("===FBX_RESULT===") || chunk.contains("===END_FBX_RESULT===");
+        if is_sprite_line || is_install_fail || is_result_envelope {
+            if is_install_fail {
+                tracing::warn!(owner = %self.owner_id, repo = %self.repo, "ingestion runtime failure: {}", chunk.trim());
+            } else {
+                tracing::info!(owner = %self.owner_id, repo = %self.repo, "ingestion: {}", chunk.trim());
+            }
+        }
     }
 }
 
@@ -190,8 +229,11 @@ pub fn spawn_ingestion(
             if is_cancelled(owner_id) {
                 tracing::info!("ingestion cancelled for {owner_id} — stopping before {repo}");
                 let sink = IngestionSink::new(db.clone(), owner, repo.clone());
-                sink.status("failed", &format!("Cancelled before {repo} (stopped by request)"))
-                    .await;
+                sink.status(
+                    "failed",
+                    &format!("Cancelled before {repo} (stopped by request)"),
+                )
+                .await;
                 break;
             }
             // Resume: skip a repo that already has notes in the vault (unless `force`). The
@@ -253,6 +295,31 @@ pub fn spawn_ingestion(
         )
         .execute(&db)
         .await;
+
+        // Prune to the final state. During the run we emit periodic `running` progress rows (one per
+        // vault-count increase per repo); once complete, only the FINAL state per repo matters for a
+        // reload. Delete everything for this owner except the newest `status` row per non-empty repo
+        // (the terminal done/failed/skipped) and the `complete` sentinel. This collapses each
+        // owner's footprint to a few rows — the whole point of not persisting the firehose.
+        if let Err(e) = sqlx::query!(
+            r#"DELETE FROM ingestion_events e
+               WHERE e.owner_kind = $1 AND e.agent_id = $2
+                 AND e.repo <> ''
+                 AND e.id <> (
+                     SELECT id FROM ingestion_events k
+                     WHERE k.owner_kind = e.owner_kind AND k.agent_id = e.agent_id
+                       AND k.repo = e.repo AND k.kind = 'status'
+                     ORDER BY k.created_at DESC
+                     LIMIT 1
+                 )"#,
+            owner_kind,
+            owner_id,
+        )
+        .execute(&db)
+        .await
+        {
+            tracing::warn!("ingestion_events prune failed for {owner_id}: {e:?}");
+        }
     });
 }
 
@@ -273,9 +340,7 @@ async fn ingest_repo(
     // company-scoped token with no principal.
     let (token, persona_prompt, cf_finetune_id) = match owner {
         VaultOwner::Agent(agent_id) => {
-            let (persona, cf) = principal
-                .cloned()
-                .unwrap_or_else(|| (String::new(), None));
+            let (persona, cf) = principal.cloned().unwrap_or_else(|| (String::new(), None));
             let token = crate::services::execution::taste::mint_agent_token(
                 db,
                 agent_id,
@@ -294,6 +359,17 @@ async fn ingest_repo(
 
     let api_base_url =
         std::env::var("API_BASE_URL").unwrap_or_else(|_| "http://localhost:8080".into());
+    // Optimizer creds so the fbx-agent runtime routes ingestion's LLM calls through the edge.
+    // Agent owner → its creds (agent key or server key); company vault → server creds (no agent).
+    // When OPTIMIZER_* is unset these resolve to None and the run behaves as before (Claude Code /
+    // Ollama fallback). Only the fbx-agent runtime consumes them.
+    let optimizer_creds = match owner {
+        VaultOwner::Agent(agent_id) => {
+            crate::services::execution::agent_optimizer_creds(db, agent_id).await
+        }
+        VaultOwner::Company(_) => crate::services::execution::server_optimizer_creds(),
+    };
+
     // The ingestion run is read-only documentation; we never commit/push, so task_id is a fresh
     // uuid only used to name the agent/branch (no tasks row exists).
     let brief = TaskBrief {
@@ -312,29 +388,76 @@ async fn ingest_repo(
         persona_prompt,
         cf_finetune_id,
         github_token,
+        // The professional's own Anthropic key, when they've added one. Sprite prefers it and
+        // falls back to the server key, so onboarding still works before a key exists. Only an
+        // Agent owner has one; a Company vault ingestion has no per-agent key (uses the server key).
+        anthropic_api_key: match owner {
+            VaultOwner::Agent(agent_id) => {
+                crate::services::execution::agent_anthropic_key(db, agent_id).await
+            }
+            VaultOwner::Company(_) => None,
+        },
         taste_token: token.clone(),
         api_base_url,
+        // Documentation is high-volume and (for a fresh agent / company vault) runs on the
+        // platform's server key. Leave the model unpinned so the runtime uses the cheap
+        // `Ingest` default (env `FLABORFUL_MODEL_INGEST`) instead of a frontier model.
+        model: None,
+        // Optimizer creds for the fbx-agent runtime (None when OPTIMIZER_* is unset → legacy behavior).
+        optimizer_base_url: optimizer_creds.base_url.clone(),
+        optimizer_key: optimizer_creds.key.clone(),
+        provider_key: optimizer_creds.provider_key.clone(),
+        vars: serde_json::Value::Null,
+        // No per-node override for the ingest lane — the agent's configured runtime drives it.
+        runtime_override: None,
     };
 
-    // Managed Agents is the default ingestion backend (least setup; the vault tools are
-    // registered as native custom tools). The sink streams the agent's transcript into
-    // ingestion_events for the live onboarding feed.
-    let sink = IngestionSink::new(db.clone(), owner, repo.to_string());
+    // The sink is the transcript target for the backend. It no longer persists the transcript (see
+    // IngestionSink::push); progress reaches the UI as low-volume `running` status rows emitted by
+    // the ticker below. Arc so the ticker task can share it with the run.
+    let sink = std::sync::Arc::new(IngestionSink::new(db.clone(), owner, repo.to_string()));
     sink.status(
         "running",
         &format!("Documenting {repo} (branch {base_branch})"),
     )
     .await;
 
-    // Ingestion backend is selectable so we can compare cost: Managed Agents (default) vs. Sprite.
-    // Set INGEST_BACKEND=sprite to run ingestion on our own Fly.io VM instead (falls back to
-    // Managed automatically if SPRITES_TOKEN isn't configured — see ExecutionBackends::get).
-    let backend_kind = match std::env::var("INGEST_BACKEND").as_deref() {
-        Ok("sprite") => ExecutionBackendKind::Sprite,
-        _ => ExecutionBackendKind::Managed,
+    // Progress ticker: while the agent runs, poll the AUTHORITATIVE vault note count for this repo
+    // and emit a `running` status row only when it increases. This gives the live feed and reloads
+    // an accurate, climbing note count without a DB row per transcript chunk — tens of rows per
+    // repo at most, driven by real vault_notes inserts rather than the double-counting transcript
+    // heuristic. Cancelled as soon as the run returns.
+    let ticker = {
+        let sink = sink.clone();
+        let repo = repo.to_string();
+        tokio::spawn(async move {
+            let mut last = -1;
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(7)).await;
+                let count = sink.vault_note_count().await;
+                if count > last {
+                    last = count;
+                    sink.status_with_count(
+                        "running",
+                        &format!("Documenting {repo} — {count} notes so far"),
+                        count,
+                    )
+                    .await;
+                }
+            }
+        })
     };
-    let backend = backends.get(backend_kind);
-    let result = backend.run_implementation(&brief, &sink).await;
+
+    // Ingestion runs on Sprite. It happens the moment a professional first builds their vault —
+    // before they've had any chance to add their own Anthropic key — and Managed Agents bills
+    // strictly against the professional's own key with NO server fallback, so on Managed a fresh
+    // onboarding run just skips every repo ("0 notes written"). Sprite falls back to the server's
+    // ANTHROPIC_API_KEY (see sprite.rs), so the vault builds on the platform's dime during
+    // onboarding; it's also cheaper for this documentation workload. (Sprite itself falls back to
+    // Managed only if SPRITES_TOKEN isn't configured — see ExecutionBackends::get.)
+    let backend = backends.get(ExecutionBackendKind::Sprite);
+    let result = backend.run_implementation(&brief, sink.as_ref()).await;
+    ticker.abort(); // stop polling now that the run is done
     let _ = crate::services::execution::taste::revoke_by_token(db, &token).await;
 
     match &result {
@@ -342,8 +465,12 @@ async fn ingest_repo(
             // Report the authoritative vault count, not the event tally (which double-counts on
             // agent retries within a run).
             let count = sink.vault_note_count().await;
-            sink.status_with_count("done", &format!("Finished {repo} — {count} notes written"), count)
-                .await;
+            sink.status_with_count(
+                "done",
+                &format!("Finished {repo} — {count} notes written"),
+                count,
+            )
+            .await;
         }
         Err(e) => {
             sink.status("failed", &format!("Failed on {repo}: {e}"))

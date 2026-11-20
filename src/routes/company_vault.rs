@@ -31,7 +31,10 @@ pub fn router() -> Router<AppState> {
         .route("/:company_id/vault/repos", get(list_repos))
         .route("/:company_id/vault/ingest", post(ingest_repo))
         .route("/:company_id/vault/ingestion/status", get(ingestion_status))
-        .route("/:company_id/vault/ingestion/cancel", post(ingestion_cancel))
+        .route(
+            "/:company_id/vault/ingestion/cancel",
+            post(ingestion_cancel),
+        )
         .route("/:company_id/vault/notes", get(list_notes))
         .route("/:company_id/vault/reindex", post(reindex))
         .route("/:company_id/vault/repair-links", post(repair_links))
@@ -130,7 +133,9 @@ async fn ingest_repo(
         vec![(body.repo.clone(), branch)],
         body.force,
     );
-    Ok(Json(serde_json::json!({ "status": "ingesting", "repo": body.repo })))
+    Ok(Json(
+        serde_json::json!({ "status": "ingesting", "repo": body.repo }),
+    ))
 }
 
 #[derive(Serialize)]
@@ -350,10 +355,14 @@ async fn reindex(
     Path(company_id): Path<Uuid>,
 ) -> AppResult<Json<serde_json::Value>> {
     authz::require_company_owner(&state.db, auth.user_id, company_id).await?;
-    let reindexed =
-        vault::reindex_owner(&state.db, &state.qdrant, &state.inference, owner(company_id))
-            .await
-            .map_err(AppError::Internal)?;
+    let reindexed = vault::reindex_owner(
+        &state.db,
+        &state.qdrant,
+        &state.inference,
+        owner(company_id),
+    )
+    .await
+    .map_err(AppError::Internal)?;
     Ok(Json(serde_json::json!({ "reindexed": reindexed })))
 }
 
@@ -366,7 +375,9 @@ async fn repair_links(
     let links_repaired = vault::repair_related_links(&state.db, owner(company_id))
         .await
         .map_err(AppError::Internal)?;
-    Ok(Json(serde_json::json!({ "links_repaired": links_repaired })))
+    Ok(Json(
+        serde_json::json!({ "links_repaired": links_repaired }),
+    ))
 }
 
 /// GET /companies/:id/vault/graph — the company's own List ⇄ Graph view (un-anonymized).

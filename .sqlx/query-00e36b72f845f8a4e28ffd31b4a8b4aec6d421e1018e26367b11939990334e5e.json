@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE agents SET anthropic_api_key_enc = NULL, updated_at = NOW() WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "00e36b72f845f8a4e28ffd31b4a8b4aec6d421e1018e26367b11939990334e5e"
+}

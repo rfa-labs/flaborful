@@ -21,6 +21,20 @@
   let notifEventSource: EventSource | null = null;
   let activeTasks: Array<Task & { job_title: string }> = [];
 
+  // Cumulative optimizer savings for the agent (through the RFA Labs optimizer edge). `configured`
+  // is false when the optimizer isn't set up → the card is hidden. Best-effort; never blocks the page.
+  interface OptimizerSavings { configured: boolean; total_saving?: number; total_baseline?: number; total_actual?: number }
+  let savings: OptimizerSavings | null = null;
+  async function loadSavings(agentId: string) {
+    try { savings = await api.get<OptimizerSavings>(`/agents/${agentId}/optimizer-savings`); }
+    catch { savings = null; }
+  }
+  function usd(n: number): string {
+    if (!n) return '$0';
+    if (n < 0.01) return `$${n.toFixed(4)}`;
+    return `$${n.toFixed(2)}`;
+  }
+
   // Connected accounts (owner-side OAuth connections the agent acts through)
   interface Conn { provider: string; external_account: string }
   let connections: Conn[] = [];
@@ -125,7 +139,7 @@
         [dashboard] = await Promise.all([
           api.get<ProfessionalDashboard>(`/dashboard/professional/${resolvedProfessionalId}`),
           api.get<{ id: string; status: string }>('/agents/mine')
-            .then(a => { agent = a; session.setIds({ agentId: a.id }); loadVaultNoteCount(a.id); })
+            .then(a => { agent = a; session.setIds({ agentId: a.id }); loadVaultNoteCount(a.id); loadSavings(a.id); })
             .catch(() => { /* no agent yet */ }),
         ]);
 
@@ -289,6 +303,27 @@
       {/each}
     </div>
 
+    {#if savings?.configured && (savings.total_saving || savings.total_baseline)}
+      <!-- Cumulative optimizer savings: what running your agent through the optimizer has saved. -->
+      <div class="card p-5 mb-8 border-l-4 border-green-500 bg-green-50">
+        <div class="flex items-center gap-4 flex-wrap">
+          <div class="text-2xl">💸</div>
+          <div class="flex-1 min-w-[12rem]">
+            <div class="font-semibold text-green-800">Optimizer savings</div>
+            <div class="text-sm text-green-700 mt-0.5">
+              Your agent has saved <span class="font-bold">{usd(savings.total_saving ?? 0)}</span>
+              running through the optimizer{#if savings.total_baseline}
+                — <span class="font-medium">{usd(savings.total_actual ?? 0)}</span> spent vs
+                <span class="font-medium">{usd(savings.total_baseline)}</span> at baseline{/if}.
+            </div>
+            <div class="text-xs text-green-600/70 mt-1">
+              Savings grow as the optimizer learns which work can safely run on cheaper models.
+            </div>
+          </div>
+        </div>
+      </div>
+    {/if}
+
     {#if dashboard.open_jobs > 0}
       <div class="card p-5 mb-8 border-l-4 border-brand-500 bg-brand-50">
         <div class="flex items-center gap-3">
@@ -401,7 +436,9 @@
               { label: 'Job board', href: '/studio/jobs/board' },
               { label: 'Workflow Studio', href: '/studio/workflows' },
               { label: 'Executions', href: '/studio/executions' },
+              { label: 'Run log', href: '/studio/runs' },
               { label: 'Knowledge vault', href: '/studio/knowledge' },
+              { label: 'Skills', href: '/studio/skills' },
               { label: 'My jobs', href: '/studio/jobs' },
               { label: 'Payouts', href: '/studio/payouts' },
               { label: 'Agent settings', href: '/studio/agent' },

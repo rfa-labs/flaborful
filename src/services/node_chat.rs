@@ -136,7 +136,7 @@ pub async fn send_message(
     let user = format!("Conversation so far:\n{transcript}\n\nRespond to the latest message.");
 
     let reply = inference
-        .worker(&system, &user, meta.cf_finetune_id.as_deref())
+        .worker_likeness(&system, &user, meta.cf_finetune_id.as_deref())
         .await?;
 
     let msg = sqlx::query_as::<_, NodeMessage>(

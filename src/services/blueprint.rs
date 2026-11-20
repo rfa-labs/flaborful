@@ -72,7 +72,28 @@ pub async fn build_blueprint(
     // pattern/tech notes scoped to the overlay repos.
     let company_ctx = retrieve_company_context(db, qdrant, inference, overlays, task_text).await;
 
-    if style.is_empty() && arch.is_empty() && snippets.is_empty() && company_ctx.is_empty() {
+    // Skills: reusable procedural playbooks matched to this task. Unlike the other layers, skills
+    // are injected VERBATIM (not distilled through the LoRA) — they are prescriptive step-by-step
+    // instructions the builder must follow, and paraphrasing them would drop the steps. This is
+    // Gumloop's on-demand model: only skills that match the task load their full bodies. See
+    // [[Flaborful Skills]].
+    let skills = retrieve_layer(
+        db,
+        qdrant,
+        inference,
+        agent_id,
+        task_text,
+        NoteLayer::Skill,
+        3,
+    )
+    .await;
+
+    if style.is_empty()
+        && arch.is_empty()
+        && snippets.is_empty()
+        && company_ctx.is_empty()
+        && skills.is_empty()
+    {
         return Ok(String::new());
     }
 
@@ -101,10 +122,23 @@ pub async fn build_blueprint(
         task = task_text, style = style, arch = arch, snippets = snippets, company = company_block,
     );
 
-    let distilled = inference.worker(&system, &user, lora_name).await?;
+    // Likeness step: distill in the professional's voice via their LoRA — never optimizer-routed.
+    let distilled = inference.worker_likeness(&system, &user, lora_name).await?;
+
+    // Applicable skills, appended verbatim after the distilled brief.
+    let skills_block = if skills.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\n\n## Applicable skills (follow these playbooks step-by-step when relevant)\n{}",
+            skills.trim()
+        )
+    };
+
     Ok(format!(
-        "# Execution Blueprint (your standing preferences)\n{}",
-        distilled.trim()
+        "# Execution Blueprint (your standing preferences)\n{}{}",
+        distilled.trim(),
+        skills_block
     ))
 }
 

@@ -171,6 +171,63 @@ impl GitHubIngestion {
         })
     }
 
+    /// Build a profile from an explicit set of repos the user picked in the onboarding repo-picker,
+    /// as `(full_name, branch)` pairs. Unlike `ingest`, there is NO cap — the style guide is built
+    /// from exactly the selected repos. READMEs (and, for the first several repos, PR reviews) are
+    /// fetched per repo; a repo whose README fetch fails is still included (README `None`).
+    pub async fn ingest_selected(&self, repos: &[(String, String)]) -> Result<GitHubProfile> {
+        let resolved_username = self.fetch_github_login().await?;
+        tracing::info!(
+            "Building style-guide profile for {} from {} selected repos",
+            resolved_username,
+            repos.len()
+        );
+
+        let mut summaries = Vec::new();
+        for (full_name, branch) in repos {
+            let readme = self
+                .fetch_readme_full(full_name, branch)
+                .await
+                .ok()
+                .flatten();
+            // Derive the short name from full_name ("owner/repo" -> "repo"); language/description
+            // aren't needed for the style guide (it works off READMEs + PR reviews).
+            let name = full_name
+                .rsplit('/')
+                .next()
+                .unwrap_or(full_name)
+                .to_string();
+            summaries.push(RepoSummary {
+                name,
+                full_name: full_name.clone(),
+                description: None,
+                language: None,
+                default_branch: branch.clone(),
+                readme,
+            });
+        }
+
+        // PR reviews are a per-repo, rate-limit-heavy fetch; cap the number of repos we pull them
+        // from (not the repos we document) to keep onboarding responsive. This bounds API calls,
+        // not which repos feed the vault.
+        let mut all_reviews = Vec::new();
+        for summary in summaries.iter().take(5) {
+            // fetch_pr_reviews takes (owner, repo); split full_name so org repos resolve correctly.
+            let (owner, repo) = summary
+                .full_name
+                .split_once('/')
+                .unwrap_or((resolved_username.as_str(), summary.name.as_str()));
+            let reviews = self.fetch_pr_reviews(owner, repo).await.unwrap_or_default();
+            all_reviews.extend(reviews);
+        }
+
+        Ok(GitHubProfile {
+            username: resolved_username,
+            repos: summaries,
+            pr_reviews: all_reviews,
+        })
+    }
+
     async fn fetch_repos(&self, username: &str) -> Result<Vec<GitHubRepo>> {
         let url = if self.token.is_some() {
             "https://api.github.com/user/repos?visibility=all&sort=updated&per_page=30".to_string()
@@ -230,9 +287,16 @@ impl GitHubIngestion {
         repo: &str,
         branch: &str,
     ) -> Result<Option<String>> {
+        self.fetch_readme_full(&format!("{username}/{repo}"), branch)
+            .await
+    }
+
+    /// Fetch a repo's README by its authoritative `full_name` ("owner/repo"). Correct for
+    /// org/collaborator repos where the owner isn't the authenticated user.
+    async fn fetch_readme_full(&self, full_name: &str, branch: &str) -> Result<Option<String>> {
         let url = format!(
-            "https://api.github.com/repos/{}/{}/contents/README.md?ref={}",
-            username, repo, branch
+            "https://api.github.com/repos/{}/contents/README.md?ref={}",
+            full_name, branch
         );
         let content = self
             .request(&url)

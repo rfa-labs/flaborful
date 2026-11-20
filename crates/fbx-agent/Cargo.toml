@@ -1,0 +1,22 @@
+[package]
+name = "fbx-agent"
+version = "0.1.1"
+edition = "2021"
+
+# flaborful's DAG-aware coding orchestrator that runs *inside a Sprite*. Deliberately a standalone
+# crate with a minimal dependency set (reqwest with rustls — no OpenSSL/native-tls, no ONNX/sqlx) so
+# it cross-compiles cleanly to the sprite's target (x86_64-unknown-linux-gnu) and ships as a small,
+# self-contained binary. It imports nothing from the flaborful-api server crate.
+[[bin]]
+name = "fbx-agent"
+path = "src/main.rs"
+
+[dependencies]
+# rustls-tls (not the default native-tls) keeps the build free of system OpenSSL — portable + easy
+# to cross-compile, same reason the optimizer switched (see The Optimizer packaging notes).
+reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "fs", "time"] }
+async-trait = "0.1"
+anyhow = "1"

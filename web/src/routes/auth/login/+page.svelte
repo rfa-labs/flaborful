@@ -1,11 +1,20 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
+  import { page } from '$app/stores';
   import { api } from '$lib/api/client';
   import { session, isLoggedIn } from '$lib/stores/session';
 
+  // Where a route guard sent the user from — only accept a local same-origin path so `next`
+  // can't be used as an open redirect. Falls back to the role's home portal.
+  function destFor(role: string): string {
+    const next = $page.url.searchParams.get('next');
+    if (next && next.startsWith('/') && !next.startsWith('//')) return next;
+    return role === 'company' ? '/hire' : '/studio';
+  }
+
   onMount(() => {
-    if ($isLoggedIn) goto($session.role === 'company' ? '/hire' : '/studio');
+    if ($isLoggedIn) goto(destFor($session.role ?? ''));
   });
 
   let email = '';
@@ -36,7 +45,7 @@
         } catch { /* first-time company user */ }
       }
 
-      goto(res.role === 'company' ? '/hire' : '/studio');
+      goto(destFor(res.role));
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Login failed';
     } finally {

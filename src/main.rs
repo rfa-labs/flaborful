@@ -68,6 +68,16 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
+    // Reflection scheduler: periodically self-reviews agents with new activity and files
+    // improvement proposals into the review queue. Backgrounded; runs for the process lifetime.
+    {
+        let db = state.db.clone();
+        let inference = state.inference.clone();
+        tokio::spawn(async move {
+            services::reflections::run_scheduler(db, inference).await;
+        });
+    }
+
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods(Any)

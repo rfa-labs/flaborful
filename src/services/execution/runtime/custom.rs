@@ -67,10 +67,17 @@ impl AgentRuntime for CustomRuntime {
     }
 
     fn invoke_command(&self, repo_dir: &str, brief: &TaskBrief) -> String {
+        // `{model}` resolves to the brief's pinned model, else the per-`TaskKind` default, so a
+        // custom runtime template can inject the selected model like the built-in adapters do.
+        let model = brief
+            .model
+            .clone()
+            .unwrap_or_else(|| super::super::default_model(brief.kind));
         self.str_field("invoke_template")
             .replace("{repo_dir}", repo_dir)
             .replace("{task}", &shell_escape(&brief.task_text))
             .replace("{persona}", &shell_escape(&brief.persona_prompt))
+            .replace("{model}", &shell_escape(&model))
     }
 }
 

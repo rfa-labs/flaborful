@@ -113,10 +113,29 @@ fn tool_specs() -> Value {
                     "slug": { "type": "string", "description": "Stable kebab-case note id (unique in your vault)." },
                     "title": { "type": "string" },
                     "body": { "type": "string", "description": "Markdown body. Use [[other-slug]] inline for links." },
-                    "layer": { "type": "string", "enum": ["feature","pattern","tech","golden_snippet","architecture","style_rule","note"] },
+                    "layer": { "type": "string", "enum": ["feature","pattern","tech","golden_snippet","architecture","style_rule","skill","note"] },
                     "domain": { "type": "string", "enum": ["backend","frontend","infra","testing","product","general"] },
                     "related": { "type": "array", "items": { "type": "string" }, "description": "Slugs of related notes." },
                     "repo": { "type": "string", "description": "Source repo, for code-derived notes." }
+                },
+                "required": ["slug", "body"]
+            }
+        },
+        {
+            "name": "write_skill",
+            "description": "Save a reusable SKILL: a step-by-step playbook for a task you did well, so \
+                            you (and future runs) can repeat it consistently. 'when_to_use' is the \
+                            trigger that decides when this skill loads; 'body' is the numbered steps. \
+                            Prefer this over a plain note when the knowledge is a repeatable procedure.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "slug": { "type": "string", "description": "Stable kebab-case skill id." },
+                    "title": { "type": "string" },
+                    "when_to_use": { "type": "string", "description": "One line: the situations this skill applies to (its trigger/description)." },
+                    "body": { "type": "string", "description": "The playbook: numbered, prescriptive steps." },
+                    "domain": { "type": "string", "enum": ["backend","frontend","infra","testing","product","general"] },
+                    "related": { "type": "array", "items": { "type": "string" } }
                 },
                 "required": ["slug", "body"]
             }
